@@ -61,7 +61,7 @@ export type LineItemInput = z.infer<typeof lineItemInputSchema>;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const invoiceInputSchema = z.object({
-  clientId: z.string().cuid("Invalid client ID"),
+  clientId: z.string().min(1, "Client ID is required"),
 
   title: z.string().max(200, "Title must be 200 characters or fewer").optional(),
 
@@ -94,14 +94,15 @@ export const invoiceInputSchema = z.object({
     .array(lineItemInputSchema)
     .min(1, "At least one line item is required")
     .max(MAX_LINE_ITEMS, `Cannot have more than ${MAX_LINE_ITEMS} line items`),
+
+  // Optional client-supplied totals (UNTRUSTED: validated and overridden by server)
+  subtotalMinorUnits: z.number().int().optional(),
+  totalMinorUnits: z.number().int().optional(),
 }).refine(
   (data) => {
-    // Due date must not be in the past
-    const due = new Date(data.dueDate + "T00:00:00Z");
-    const invoiceDate = data.invoiceDate
-      ? new Date(data.invoiceDate + "T00:00:00Z")
-      : new Date();
-    return due >= invoiceDate;
+    const dueDay = data.dueDate;
+    const invoiceDay = data.invoiceDate || new Date().toISOString().substring(0, 10);
+    return dueDay >= invoiceDay;
   },
   {
     message: "Due date must be on or after the invoice date",
@@ -110,6 +111,16 @@ export const invoiceInputSchema = z.object({
 );
 
 export type InvoiceInput = z.infer<typeof invoiceInputSchema>;
+
+export const createDraftInvoiceSchema = invoiceInputSchema.and(
+  z.object({
+    workspaceId: z.string().min(1).optional(),
+    actorId: z.string().min(1).optional(),
+    isDemoData: z.boolean().optional(),
+  })
+);
+
+export type CreateDraftInvoiceInput = z.infer<typeof createDraftInvoiceSchema>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI Draft Output Schema

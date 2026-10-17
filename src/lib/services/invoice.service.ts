@@ -69,6 +69,30 @@ function hashApprovalPayload(payload: ApprovalPayload): string {
   return createHash("sha256").update(canonicalJson).digest("hex");
 }
 
+export function computeMaterialPayloadHash(invoice: {
+  id: string;
+  workspaceId: string;
+  client: { email: string };
+  totalMinorUnits: number;
+  currency: string;
+  dueDate: Date | string;
+  actionType?: "SEND_INVOICE" | "SEND_REMINDER" | "CANCEL_INVOICE";
+}): string {
+  const canonicalJson = JSON.stringify({
+    invoiceId: invoice.id,
+    workspaceId: invoice.workspaceId,
+    actionType: invoice.actionType ?? "SEND_INVOICE",
+    recipientEmail: invoice.client.email,
+    totalMinorUnits: invoice.totalMinorUnits,
+    currency: invoice.currency,
+    dueDate:
+      typeof invoice.dueDate === "string"
+        ? invoice.dueDate.substring(0, 10)
+        : invoice.dueDate.toISOString().substring(0, 10),
+  });
+  return createHash("sha256").update(canonicalJson).digest("hex");
+}
+
 function buildApprovalPayload(
   invoice: Awaited<ReturnType<typeof getInvoiceById>>,
   actionType: "SEND_INVOICE" | "SEND_REMINDER" | "CANCEL_INVOICE"
@@ -90,7 +114,7 @@ function buildApprovalPayload(
 // Invoice CRUD
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function getInvoiceById(invoiceId: string, workspaceId: string) {
+export async function getInvoiceById(invoiceId: string, workspaceId: string) {
   return db.invoice.findFirst({
     where: { id: invoiceId, workspaceId },
     include: {
@@ -98,6 +122,67 @@ async function getInvoiceById(invoiceId: string, workspaceId: string) {
       lineItems: { orderBy: { sortOrder: "asc" } },
     },
   });
+}
+
+/**
+ * Retrieve an invoice by ID and workspace, returning clean public fields and
+ * the deterministic material payload hash.
+ */
+export async function getInvoice(invoiceId: string, workspaceId: string) {
+  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  if (!invoice) {
+    return { ok: false as const, error: "Invoice not found", code: "NOT_FOUND" };
+  }
+
+  const materialPayloadHash = computeMaterialPayloadHash(invoice);
+
+  return {
+    ok: true as const,
+    data: {
+      invoice: {
+        id: invoice.id,
+        workspaceId: invoice.workspaceId,
+        clientId: invoice.clientId,
+        number: invoice.number,
+        title: invoice.title,
+        notes: invoice.notes,
+        terms: invoice.terms,
+        currency: invoice.currency,
+        subtotalMinorUnits: invoice.subtotalMinorUnits,
+        taxRateBasisPoints: invoice.taxRateBasisPoints,
+        taxMinorUnits: invoice.taxMinorUnits,
+        totalMinorUnits: invoice.totalMinorUnits,
+        invoiceDate: invoice.invoiceDate,
+        dueDate: invoice.dueDate,
+        cashpilotStatus: invoice.cashpilotStatus,
+        paypalInvoiceId: invoice.paypalInvoiceId,
+        paypalStatus: invoice.paypalStatus,
+        lastSyncAt: invoice.lastSyncAt,
+        syncIsStale: invoice.syncIsStale,
+        isDemoData: invoice.isDemoData,
+        aiDraftId: invoice.aiDraftId,
+        createdAt: invoice.createdAt,
+        updatedAt: invoice.updatedAt,
+        client: {
+          id: invoice.client.id,
+          name: invoice.client.name,
+          email: invoice.client.email,
+          company: invoice.client.company,
+          phone: invoice.client.phone,
+          isDemo: invoice.client.isDemo,
+        },
+        lineItems: invoice.lineItems.map((li) => ({
+          id: li.id,
+          description: li.description,
+          quantity: li.quantity,
+          unitPriceMinorUnits: li.unitPriceMinorUnits,
+          totalMinorUnits: li.totalMinorUnits,
+          sortOrder: li.sortOrder,
+        })),
+      },
+      materialPayloadHash,
+    },
+  };
 }
 
 /**
@@ -110,7 +195,13 @@ export async function createInvoice(
   workspaceId: string,
   actorId: string,
   input: InvoiceInput
-): Promise<ServiceResult<{ invoiceId: string }>> {
+): Promise<
+  ServiceResult<{
+    invoiceId: string;
+    invoice: NonNullable<Awaited<ReturnType<typeof getInvoice>>["data"]>["invoice"];
+    materialPayloadHash: string;
+  }>
+> {
   // 1. Validate all fields
   const parsed = invoiceInputSchema.safeParse(input);
   if (!parsed.success) {
@@ -148,6 +239,29 @@ export async function createInvoice(
     };
   }
 
+  // 3b. Verify client-supplied totals if provided (must match server math)
+  if (
+    input.totalMinorUnits !== undefined &&
+    input.totalMinorUnits !== totals.totalMinorUnits
+  ) {
+    return {
+      ok: false,
+      error: `Client-supplied total (${input.totalMinorUnits}) does not match server-calculated total (${totals.totalMinorUnits})`,
+      code: "TOTAL_MISMATCH",
+    };
+  }
+
+  if (
+    input.subtotalMinorUnits !== undefined &&
+    input.subtotalMinorUnits !== totals.subtotalMinorUnits
+  ) {
+    return {
+      ok: false,
+      error: `Client-supplied subtotal (${input.subtotalMinorUnits}) does not match server-calculated subtotal (${totals.subtotalMinorUnits})`,
+      code: "SUBTOTAL_MISMATCH",
+    };
+  }
+
   // 4. Persist invoice and line items in a transaction
   const invoice = await db.$transaction(async (tx) => {
     const inv = await tx.invoice.create({
@@ -165,20 +279,28 @@ export async function createInvoice(
         invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : new Date(),
         dueDate: new Date(data.dueDate + "T00:00:00Z"),
         cashpilotStatus: CashPilotStatus.DRAFT,
+        isDemoData: client.isDemo,
+      },
+      include: {
+        client: true,
       },
     });
 
     // Create line items with deterministic totals
-    await tx.invoiceLineItem.createMany({
-      data: data.lineItems.map((li, idx) => ({
-        invoiceId: inv.id,
-        description: li.description,
-        quantity: li.quantity,
-        unitPriceMinorUnits: li.unitPriceMinorUnits,
-        totalMinorUnits: totals.lineItemTotals[idx],
-        sortOrder: idx,
-      })),
-    });
+    const createdLineItems = await Promise.all(
+      data.lineItems.map((li, idx) =>
+        tx.invoiceLineItem.create({
+          data: {
+            invoiceId: inv.id,
+            description: li.description,
+            quantity: li.quantity,
+            unitPriceMinorUnits: li.unitPriceMinorUnits,
+            totalMinorUnits: totals.lineItemTotals[idx],
+            sortOrder: idx,
+          },
+        })
+      )
+    );
 
     // Record audit event
     await tx.activityEvent.create({
@@ -193,10 +315,62 @@ export async function createInvoice(
       },
     });
 
-    return inv;
+    return {
+      ...inv,
+      lineItems: createdLineItems,
+    };
   });
 
-  return { ok: true, data: { invoiceId: invoice.id } };
+  const materialPayloadHash = computeMaterialPayloadHash(invoice);
+
+  return {
+    ok: true,
+    data: {
+      invoiceId: invoice.id,
+      invoice: {
+        id: invoice.id,
+        workspaceId: invoice.workspaceId,
+        clientId: invoice.clientId,
+        number: invoice.number,
+        title: invoice.title,
+        notes: invoice.notes,
+        terms: invoice.terms,
+        currency: invoice.currency,
+        subtotalMinorUnits: invoice.subtotalMinorUnits,
+        taxRateBasisPoints: invoice.taxRateBasisPoints,
+        taxMinorUnits: invoice.taxMinorUnits,
+        totalMinorUnits: invoice.totalMinorUnits,
+        invoiceDate: invoice.invoiceDate,
+        dueDate: invoice.dueDate,
+        cashpilotStatus: invoice.cashpilotStatus,
+        paypalInvoiceId: invoice.paypalInvoiceId,
+        paypalStatus: invoice.paypalStatus,
+        lastSyncAt: invoice.lastSyncAt,
+        syncIsStale: invoice.syncIsStale,
+        isDemoData: invoice.isDemoData,
+        aiDraftId: invoice.aiDraftId,
+        createdAt: invoice.createdAt,
+        updatedAt: invoice.updatedAt,
+        client: {
+          id: invoice.client.id,
+          name: invoice.client.name,
+          email: invoice.client.email,
+          company: invoice.client.company,
+          phone: invoice.client.phone,
+          isDemo: invoice.client.isDemo,
+        },
+        lineItems: invoice.lineItems.map((li) => ({
+          id: li.id,
+          description: li.description,
+          quantity: li.quantity,
+          unitPriceMinorUnits: li.unitPriceMinorUnits,
+          totalMinorUnits: li.totalMinorUnits,
+          sortOrder: li.sortOrder,
+        })),
+      },
+      materialPayloadHash,
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
