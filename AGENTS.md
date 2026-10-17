@@ -130,7 +130,7 @@ A feature is complete only when:
 - Read `docs/README.md` for the documentation index.
 - Consult `docs/product/PRODUCT_CONCEPT.md` for the problem, product vision, MVP scope, and demo narrative.
 - Consult `docs/requirements/SRS.md` before implementing or modifying requirements-driven behavior.
-- Consult `docs/design/WIREFRAMES.md` and the original wireframes before changing the UI.
+- Consult `docs/design/UI_DESIGN_REFERENCE.md`, `docs/design/CashPilotAI_UIScreens.pdf`, and `docs/design/WIREFRAMES.md` before implementing or changing UI.
 - Treat the SRS and its acceptance criteria as the implementation baseline.
 - If requirements are ambiguous or conflict, explain the conflict before making a consequential assumption.
 - Update relevant documentation when an approved product decision or implementation behavior changes.

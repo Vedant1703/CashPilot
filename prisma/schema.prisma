@@ -1,0 +1,370 @@
+// CashPilot AI — Prisma Schema
+// SRS § 6: Data model — conceptual entities
+// Financial integrity: monetary values stored as integer minor units (cents)
+// Provider status kept SEPARATE from CashPilot normalized workflow status
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace & User
+// SRS § 4: Workspace and clients — authorization boundary
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  ownerId   String   // links to auth session / user context
+  isDemo    Boolean  @default(false) // clearly identifies seed/fixture data
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  clients    Client[]
+  invoices   Invoice[]
+  approvals  Approval[]
+  activities ActivityEvent[]
+  operations ExternalOperation[]
+
+  @@index([ownerId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Client / Recipient
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Client {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  email       String
+  phone       String?
+  company     String?
+  notes       String?
+  isDemo      Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id])
+  invoices  Invoice[]
+
+  @@index([workspaceId])
+  @@index([email, workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoice
+// SRS § 6: Invoice — core financial entity
+// Financial integrity rules:
+//   • subtotalMinorUnits, taxMinorUnits, totalMinorUnits are ALWAYS integers
+//   • currency uses ISO 4217 (e.g., "USD")
+//   • totals are computed server-side (InvoiceService), NEVER by AI or client
+//   • cashpilotStatus vs paypalStatus are SEPARATE fields
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Invoice {
+  id          String    @id @default(cuid())
+  workspaceId String
+  clientId    String
+  number      String?   // human-readable invoice number (e.g., INV-001)
+  title       String?
+  notes       String?
+  terms       String?
+
+  // Financial correctness — integer minor units, no floating point
+  currency            String  @default("USD")  // ISO 4217
+  subtotalMinorUnits  Int     // sum of line item totals
+  taxRateBasisPoints  Int     @default(0)      // e.g., 1000 = 10.00%
+  taxMinorUnits       Int     @default(0)      // computed server-side
+  totalMinorUnits     Int     // authoritative total — server-computed
+
+  // Dates
+  invoiceDate DateTime  @default(now())
+  dueDate     DateTime
+
+  // CashPilot normalized workflow status (separate from provider status)
+  cashpilotStatus CashPilotStatus @default(DRAFT)
+
+  // PayPal provider data — kept strictly separate from cashpilotStatus
+  paypalInvoiceId     String?   // provider-assigned ID after draft creation
+  paypalStatus        String?   // raw provider status string (DRAFT, SENT, PAID, etc.)
+  paypalStatusRaw     Json?     // full raw provider status object for audit
+  lastSyncAt          DateTime? // last successful status retrieval from provider
+  syncIsStale         Boolean   @default(false) // true if last refresh failed
+
+  // Origin tracking
+  isDemoData      Boolean @default(false) // clearly labels seed/fixture invoices
+  aiDraftId       String? // reference to the AI draft that generated this, if any
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id])
+  client      Client       @relation(fields: [clientId], references: [id])
+  lineItems   InvoiceLineItem[]
+  approvals   Approval[]
+  operations  ExternalOperation[]
+  activities  ActivityEvent[]
+
+  @@index([workspaceId])
+  @@index([clientId])
+  @@index([cashpilotStatus])
+  @@index([paypalInvoiceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CashPilot normalized workflow status
+// SRS § 5: Status and financial truth
+// These are CashPilot's own states — NOT a copy of PayPal's enum
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum CashPilotStatus {
+  DRAFT            // Created locally, not yet sent to provider
+  AWAITING_PAYMENT // Sent to PayPal, awaiting customer payment
+  DUE_SOON         // Awaiting payment and due within 7 days
+  OVERDUE          // Awaiting payment and past due date
+  PAID             // Only set by verified PayPal provider evidence
+  CANCELLED        // Cancelled by user or provider
+  NEEDS_REVIEW     // Unknown/unmapped provider state requiring human review
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoice Line Item
+// SRS § 6: Line items — description, quantity, unit price, deterministic total
+// ─────────────────────────────────────────────────────────────────────────────
+
+model InvoiceLineItem {
+  id          String @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Int    // integer quantity (e.g., hours, units)
+  
+  // Financial correctness — integer minor units
+  unitPriceMinorUnits Int // e.g., 15000 = $150.00
+  totalMinorUnits     Int // quantity * unitPriceMinorUnits, server-computed
+
+  sortOrder   Int @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Draft / Recommendation
+// SRS § 4: AI copilot — structured proposals, evidence, review status
+// AI output is NEVER authoritative for financial values or provider status
+// ─────────────────────────────────────────────────────────────────────────────
+
+model AiDraft {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  inputText       String    // original natural-language request
+  structuredOutput Json     // schema-validated AI output
+  evidenceSources Json?     // persisted facts used (invoice IDs, etc.)
+  modelName       String?
+  promptVersion   String?
+  reviewStatus    AiDraftReviewStatus @default(PENDING)
+  reviewedAt      DateTime?
+  invoiceId       String?   // if converted to invoice
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([workspaceId])
+}
+
+enum AiDraftReviewStatus {
+  PENDING   // Not yet reviewed by user
+  ACCEPTED  // User accepted and created invoice from it
+  EDITED    // User edited before creating invoice
+  REJECTED  // User discarded
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Approval
+// SRS § 4: Approval and execution — exact-payload binding
+// Approval must be bound to the material payload hash.
+// Any material change invalidates the approval.
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Approval {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  invoiceId       String?
+  actorId         String    // workspace owner / user reference
+
+  actionType      ApprovalAction
+  payloadHash     String    // SHA-256 of the exact material payload JSON
+  payloadSnapshot Json      // exact payload at time of approval (for audit)
+
+  status          ApprovalStatus @default(PENDING)
+  approvedAt      DateTime?
+  invalidatedAt   DateTime?
+  invalidationReason String?
+  expiresAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace  Workspace @relation(fields: [workspaceId], references: [id])
+  invoice    Invoice?  @relation(fields: [invoiceId], references: [id])
+  operations ExternalOperation[]
+  activities ActivityEvent[]
+
+  @@index([workspaceId])
+  @@index([invoiceId])
+  @@index([payloadHash])
+}
+
+enum ApprovalAction {
+  SEND_INVOICE    // Send invoice to PayPal
+  SEND_REMINDER   // Send payment reminder
+  CANCEL_INVOICE  // Cancel an active invoice
+}
+
+enum ApprovalStatus {
+  PENDING     // Created, awaiting user action
+  APPROVED    // User explicitly approved
+  INVALIDATED // Material field changed after approval
+  EXPIRED     // Time-based expiry
+  USED        // Consumed by a successful operation
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// External Operation (PayPal API call)
+// SRS § 4: PayPal integration — persist provider IDs and safe operation refs
+// Idempotency keys, timeout/unknown outcome tracking, retry safety
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ExternalOperation {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  invoiceId       String?
+  approvalId      String?
+
+  operationType   OperationType
+  provider        String        @default("paypal")
+  idempotencyKey  String?       // used to prevent duplicate PayPal writes
+  correlationId   String?       // PayPal correlation ID for debugging
+
+  attemptState    OperationAttemptState @default(PENDING)
+  attemptedAt     DateTime?
+  completedAt     DateTime?
+
+  // Result tracking
+  providerInvoiceId String?   // PayPal invoice ID on success
+  providerResponse  Json?     // safe subset of provider response (no secrets)
+  errorCode         String?
+  errorMessage      String?   // sanitized error — no secrets
+  isOutcomeUnknown  Boolean   @default(false) // true for timed-out writes
+
+  // Retry safety
+  reconciledAt      DateTime? // when outcome was confirmed after timeout
+  reconcileResult   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id])
+  invoice    Invoice?     @relation(fields: [invoiceId], references: [id])
+  approval   Approval?    @relation(fields: [approvalId], references: [id])
+  activities ActivityEvent[]
+
+  @@index([workspaceId])
+  @@index([invoiceId])
+  @@index([idempotencyKey])
+}
+
+enum OperationType {
+  CREATE_DRAFT   // POST /v2/invoicing/invoices (create draft)
+  SEND_INVOICE   // POST /v2/invoicing/invoices/{id}/send
+  SEND_REMINDER  // POST /v2/invoicing/invoices/{id}/remind
+  CANCEL_INVOICE // POST /v2/invoicing/invoices/{id}/cancel
+  GET_INVOICE    // GET /v2/invoicing/invoices/{id} (status refresh)
+}
+
+enum OperationAttemptState {
+  PENDING    // Not yet attempted
+  IN_FLIGHT  // Request dispatched, awaiting response
+  SUCCESS    // Confirmed success with provider evidence
+  FAILED     // Confirmed failure from provider
+  UNKNOWN    // Timed out — outcome unknown, must reconcile before retry
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Activity / Audit Event
+// SRS § 4: Activity history — append-only, traces user intent → result
+// Never log secrets, tokens, or unnecessary personal data
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ActivityEvent {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  invoiceId       String?
+  approvalId      String?
+  operationId     String?
+
+  eventType       ActivityEventType
+  actorType       ActorType
+  actorId         String?   // workspace owner / user / system reference
+  description     String    // human-readable summary
+  metadata        Json?     // safe contextual data — no secrets, no tokens
+
+  createdAt DateTime @default(now())
+
+  workspace  Workspace          @relation(fields: [workspaceId], references: [id])
+  invoice    Invoice?           @relation(fields: [invoiceId], references: [id])
+  approval   Approval?          @relation(fields: [approvalId], references: [id])
+  operation  ExternalOperation? @relation(fields: [operationId], references: [id])
+
+  @@index([workspaceId])
+  @@index([invoiceId])
+  @@index([createdAt])
+}
+
+enum ActivityEventType {
+  // Invoice lifecycle
+  INVOICE_CREATED
+  INVOICE_UPDATED
+  INVOICE_DELETED
+  INVOICE_STATUS_CHANGED
+
+  // AI copilot
+  AI_DRAFT_GENERATED
+  AI_DRAFT_ACCEPTED
+  AI_DRAFT_REJECTED
+
+  // Approval flow
+  APPROVAL_CREATED
+  APPROVAL_APPROVED
+  APPROVAL_INVALIDATED
+  APPROVAL_EXPIRED
+
+  // External operations (PayPal)
+  OPERATION_ATTEMPTED
+  OPERATION_SUCCEEDED
+  OPERATION_FAILED
+  OPERATION_TIMED_OUT
+
+  // Status sync
+  STATUS_SYNC_SUCCESS
+  STATUS_SYNC_FAILED
+  STATUS_SYNC_RECONCILED
+
+  // System
+  SYSTEM_EVENT
+}
+
+enum ActorType {
+  USER    // Workspace owner / human
+  SYSTEM  // Background process, reconciliation, scheduled task
+  AI      // AI copilot (generates drafts/recommendations — never executes)
+}

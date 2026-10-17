@@ -6,7 +6,8 @@ This folder contains agent-friendly Markdown references for the CashPilot AI hac
 
 1. **`product/PRODUCT_CONCEPT.md`** explains the problem, intended users, product thesis, differentiation, MVP boundaries, and demo story.
 2. **`requirements/SRS.md`** is the condensed implementation baseline: functional requirements, data/status rules, safety constraints, acceptance scenarios, risks, and open decisions.
-3. **`design/WIREFRAMES.md`** describes the screens and interaction states the implementation should cover.
+3. **`design/UI_DESIGN_REFERENCE.md`** is the authoritative UI design system reference (tokens, typography, colors, screens, flows, edge states, and mobile layout) based on the original 17-page design document [`design/CashPilotAI_UIScreens.pdf`](design/CashPilotAI_UIScreens.pdf).
+4. **`design/WIREFRAMES.md`** describes the initial screen layout specifications and interaction states.
 
 The original PDFs/DOCX used to prepare these files should remain available in the project or team drive. This Markdown set is an agent-friendly working reference, not a claim that every paragraph, table, illustration, or requirement in the original 24-page SRS and 16-page product concept has been reproduced verbatim. When a detailed requirement or ambiguity matters, consult the original source document and update this documentation deliberately.
 
@@ -30,6 +31,8 @@ AI may interpret, draft, explain, and recommend. The application validates data 
     ├── requirements/
     │   └── SRS.md
     └── design/
+        ├── CashPilotAI_UIScreens.pdf
+        ├── UI_DESIGN_REFERENCE.md
         └── WIREFRAMES.md
 ```
 
