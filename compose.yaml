@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cashpilot-postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cashpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cashpilot_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-cashpilot_dev}
+    volumes:
+      - cashpilot_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cashpilot} -d ${POSTGRES_DB:-cashpilot_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  cashpilot_pgdata:
+    name: cashpilot_pgdata
