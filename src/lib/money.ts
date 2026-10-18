@@ -161,3 +161,19 @@ export function computeInvoiceTotals(
 
   return { lineItemTotals, subtotalMinorUnits, taxMinorUnits, totalMinorUnits };
 }
+
+/**
+ * Convert integer minor units to a fixed 2-decimal string for API payloads (e.g., PayPal).
+ * Example: 15000 -> "150.00", 1250 -> "12.50", 5 -> "0.05", 0 -> "0.00"
+ * Strictly uses integer division and string formatting (no floating-point arithmetic).
+ */
+export function minorUnitsToDecimalString(minorUnits: number): string {
+  if (!Number.isInteger(minorUnits)) {
+    throw new Error(`Cannot convert non-integer minor units: ${minorUnits}`);
+  }
+  const isNegative = minorUnits < 0;
+  const abs = Math.abs(minorUnits);
+  const units = Math.floor(abs / 100);
+  const cents = abs % 100;
+  return `${isNegative ? "-" : ""}${units}.${cents.toString().padStart(2, "0")}`;
+}

@@ -25,6 +25,7 @@ import {
   formatMoney,
   parseMoneyToMinorUnits,
   isValidCurrencyCode,
+  minorUnitsToDecimalString,
 } from "@/lib/money";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -258,5 +259,33 @@ describe("isValidCurrencyCode", () => {
   it("rejects wrong length", () => {
     expect(isValidCurrencyCode("US")).toBe(false);
     expect(isValidCurrencyCode("USDD")).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// minorUnitsToDecimalString
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("minorUnitsToDecimalString", () => {
+  it("converts typical dollar and cent amounts", () => {
+    expect(minorUnitsToDecimalString(15000)).toBe("150.00");
+    expect(minorUnitsToDecimalString(1250)).toBe("12.50");
+    expect(minorUnitsToDecimalString(99)).toBe("0.99");
+    expect(minorUnitsToDecimalString(5)).toBe("0.05");
+    expect(minorUnitsToDecimalString(0)).toBe("0.00");
+  });
+
+  it("converts negative minor units", () => {
+    expect(minorUnitsToDecimalString(-500)).toBe("-5.00");
+    expect(minorUnitsToDecimalString(-5)).toBe("-0.05");
+  });
+
+  it("converts large values without floating point distortion", () => {
+    expect(minorUnitsToDecimalString(100000000)).toBe("1000000.00");
+  });
+
+  it("throws error for non-integer inputs", () => {
+    expect(() => minorUnitsToDecimalString(12.5)).toThrow();
+    expect(() => minorUnitsToDecimalString(NaN)).toThrow();
   });
 });

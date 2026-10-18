@@ -15,6 +15,7 @@
 import { db } from "@/lib/db/client";
 import {
   computeInvoiceTotals,
+  minorUnitsToDecimalString,
 } from "@/lib/money";
 import {
   invoiceInputSchema,
@@ -698,6 +699,284 @@ export async function approveInvoice(
 // PayPal Operations — Require Valid Approval
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface CreatePayPalDraftResult {
+  operationId: string;
+  paypalInvoiceId: string;
+  paypalStatus: string;
+  correlationId?: string;
+  isExistingDraft?: boolean;
+}
+
+/**
+ * Create a PayPal Sandbox draft invoice for an approved CashPilot invoice.
+ *
+ * SRS §4 & Financial Integrity Rules:
+ *   - Human approval required: MUST have an active SEND_INVOICE approval
+ *   - Approval bound to exact current material payload hash (recomputed server-side)
+ *   - Stale/modified invoice invalidates approval and rejects draft creation
+ *   - Finite timeouts, unknown-outcome tracking, idempotency key
+ *   - Draft creation ONLY — does not send, execute payment, or transition to PAID
+ *   - paypalStatus and cashpilotStatus remain strictly separate
+ */
+export async function createPayPalDraft(
+  workspaceId: string,
+  actorId: string,
+  invoiceId: string,
+  explicitApprovalId?: string
+): Promise<ServiceResult<CreatePayPalDraftResult>> {
+  // 1. Fetch current invoice with client and line items
+  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  if (!invoice) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  // 2. State invariant: Only DRAFT invoices can have a draft created in PayPal
+  if (invoice.cashpilotStatus !== CashPilotStatus.DRAFT) {
+    return {
+      ok: false,
+      error: `PayPal drafts can only be created for DRAFT invoices (current status: ${invoice.cashpilotStatus})`,
+      code: "INVALID_INVOICE_STATUS",
+    };
+  }
+
+  // 3. Deduplication: Check if invoice already has a PayPal draft
+  if (invoice.paypalInvoiceId) {
+    return {
+      ok: true,
+      data: {
+        operationId: "existing",
+        paypalInvoiceId: invoice.paypalInvoiceId,
+        paypalStatus: invoice.paypalStatus ?? "DRAFT",
+        isExistingDraft: true,
+      },
+    };
+  }
+
+  // 4. Locate the active approval for SEND_INVOICE
+  const approval = explicitApprovalId
+    ? await db.approval.findFirst({
+        where: {
+          id: explicitApprovalId,
+          invoiceId,
+          workspaceId,
+          actionType: ApprovalAction.SEND_INVOICE,
+          status: ApprovalStatus.APPROVED,
+        },
+      })
+    : await db.approval.findFirst({
+        where: {
+          invoiceId,
+          workspaceId,
+          actionType: ApprovalAction.SEND_INVOICE,
+          status: ApprovalStatus.APPROVED,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+  if (!approval) {
+    return {
+      ok: false,
+      error: "An approved SEND_INVOICE action is required before creating a PayPal draft.",
+      code: "APPROVAL_REQUIRED",
+    };
+  }
+
+  // 5. Expiry check
+  if (approval.expiresAt && approval.expiresAt < new Date()) {
+    return {
+      ok: false,
+      error: "The approval for this invoice has expired. Please review and re-approve.",
+      code: "APPROVAL_EXPIRED",
+    };
+  }
+
+  // 6. Stale payload check: Recompute authoritative material hash on server
+  const currentHash = computeMaterialPayloadHash({
+    ...invoice,
+    actionType: approval.actionType,
+  });
+
+  if (currentHash !== approval.payloadHash) {
+    // Invalidate stale approval
+    await db.approval.update({
+      where: { id: approval.id },
+      data: {
+        status: ApprovalStatus.INVALIDATED,
+        invalidatedAt: new Date(),
+        invalidationReason: "Invoice material fields changed after approval",
+      },
+    });
+
+    await db.activityEvent.create({
+      data: {
+        workspaceId,
+        invoiceId,
+        approvalId: approval.id,
+        eventType: ActivityEventType.APPROVAL_INVALIDATED,
+        actorType: ActorType.SYSTEM,
+        actorId: "system",
+        description: "Approval invalidated: invoice content changed after approval",
+        metadata: { expectedHash: approval.payloadHash, actualHash: currentHash },
+      },
+    });
+
+    return {
+      ok: false,
+      error: "Invoice was modified after approval. Approval invalidated. Please review and re-approve.",
+      code: "APPROVAL_STALE",
+    };
+  }
+
+  // 7. Check for previous unknown-outcome operation to prevent blind retry
+  const pendingOp = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.CREATE_DRAFT,
+      isOutcomeUnknown: true,
+    },
+  });
+
+  if (pendingOp) {
+    return {
+      ok: false,
+      error: "A previous PayPal draft creation operation has an unknown outcome (timed out). Reconcile before retrying.",
+      code: "PENDING_UNKNOWN_OPERATION",
+    };
+  }
+
+  // 8. Create in-flight ExternalOperation record with idempotency key
+  const idempotencyKey = `draft-${invoice.id}-${approval.id}`;
+  const operation = await db.externalOperation.create({
+    data: {
+      workspaceId,
+      invoiceId: invoice.id,
+      approvalId: approval.id,
+      operationType: OperationType.CREATE_DRAFT,
+      idempotencyKey,
+      attemptState: OperationAttemptState.IN_FLIGHT,
+      attemptedAt: new Date(),
+    },
+  });
+
+  // 9. Build validated PayPal Invoicing payload and call Sandbox API
+  const draftPayload = buildPayPalInvoicePayload(invoice);
+  const draftResult = await createPayPalDraftInvoice(draftPayload, idempotencyKey);
+
+  // 10. Handle provider error or timeout
+  if (!draftResult.success) {
+    const isUnknown = "isOutcomeUnknown" in draftResult && draftResult.isOutcomeUnknown;
+    await updateOperationAndAudit(
+      operation.id,
+      workspaceId,
+      invoice.id,
+      approval.id,
+      actorId,
+      isUnknown ? OperationAttemptState.UNKNOWN : OperationAttemptState.FAILED,
+      isUnknown,
+      draftResult.error.code,
+      draftResult.error.message,
+      draftResult.correlationId
+    );
+
+    return {
+      ok: false,
+      error: draftResult.error.message,
+      code: isUnknown ? "OPERATION_UNKNOWN_OUTCOME" : draftResult.error.code,
+    };
+  }
+
+  // 11. Success: Persist PayPal invoice ID and status inside a transaction
+  const paypalInvoiceId = draftResult.data.id;
+  const paypalStatus = draftResult.data.status ?? "DRAFT";
+
+  try {
+    await db.$transaction(async (tx) => {
+      await tx.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          attemptState: OperationAttemptState.SUCCESS,
+          completedAt: new Date(),
+          providerInvoiceId: paypalInvoiceId,
+          correlationId: draftResult.correlationId,
+          providerResponse: {
+            id: paypalInvoiceId,
+            status: paypalStatus,
+          },
+        },
+      });
+
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          paypalInvoiceId,
+          paypalStatus,
+          paypalStatusRaw: {
+            id: paypalInvoiceId,
+            status: paypalStatus,
+            correlationId: draftResult.correlationId,
+          },
+          lastSyncAt: new Date(),
+          syncIsStale: false,
+          // cashpilotStatus remains DRAFT! Never marked PAID.
+        },
+      });
+
+      await tx.activityEvent.create({
+        data: {
+          workspaceId,
+          invoiceId: invoice.id,
+          approvalId: approval.id,
+          operationId: operation.id,
+          eventType: ActivityEventType.OPERATION_SUCCEEDED,
+          actorType: ActorType.USER,
+          actorId,
+          description: `PayPal draft invoice created successfully: ${paypalInvoiceId}`,
+          metadata: {
+            paypalInvoiceId,
+            paypalStatus,
+            correlationId: draftResult.correlationId,
+          },
+        },
+      });
+    });
+  } catch (dbErr) {
+    console.error(
+      `Failed to persist PayPal invoice ${paypalInvoiceId} to local DB:`,
+      dbErr instanceof Error ? dbErr.message : dbErr
+    );
+    try {
+      await db.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          attemptState: OperationAttemptState.UNKNOWN,
+          providerInvoiceId: paypalInvoiceId,
+          isOutcomeUnknown: true,
+          errorMessage: "PayPal draft created but local database update failed",
+          correlationId: draftResult.correlationId,
+        },
+      });
+    } catch {
+      // Suppress secondary error
+    }
+    return {
+      ok: false,
+      error: `PayPal draft ${paypalInvoiceId} was created on PayPal, but local database persistence failed. Reconciliation required.`,
+      code: "DATABASE_PERSISTENCE_FAILED",
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      operationId: operation.id,
+      paypalInvoiceId,
+      paypalStatus,
+      correlationId: draftResult.correlationId,
+    },
+  };
+}
+
 /**
  * Execute an approved invoice send operation.
  * This is the ONLY path that can result in a PayPal invoice being sent.
@@ -1078,7 +1357,7 @@ export async function refreshInvoiceStatus(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Build PayPal API invoice payload from CashPilot invoice record */
-function buildPayPalInvoicePayload(
+export function buildPayPalInvoicePayload(
   invoice: NonNullable<Awaited<ReturnType<typeof getInvoiceById>>>
 ): PayPalInvoicePayload {
   const items: PayPalInvoicePayload["items"] = invoice.lineItems.map((li) => ({
@@ -1086,8 +1365,7 @@ function buildPayPalInvoicePayload(
     quantity: String(li.quantity),
     unit_amount: {
       currency_code: invoice.currency,
-      // Convert minor units to decimal for PayPal API
-      value: (li.unitPriceMinorUnits / 100).toFixed(2),
+      value: minorUnitsToDecimalString(li.unitPriceMinorUnits),
     },
   }));
 
@@ -1130,7 +1408,8 @@ async function updateOperationAndAudit(
   state: OperationAttemptState,
   isOutcomeUnknown: boolean,
   errorCode?: string,
-  errorMessage?: string
+  errorMessage?: string,
+  correlationId?: string
 ) {
   await db.$transaction(async (tx) => {
     await tx.externalOperation.update({
@@ -1141,6 +1420,7 @@ async function updateOperationAndAudit(
         isOutcomeUnknown,
         errorCode,
         errorMessage: errorMessage?.substring(0, 500), // sanitize length
+        correlationId,
       },
     });
 
@@ -1158,7 +1438,7 @@ async function updateOperationAndAudit(
         description: isOutcomeUnknown
           ? "PayPal operation timed out. Outcome is unknown — reconcile before retrying."
           : `PayPal operation failed: ${errorCode ?? "UNKNOWN_ERROR"}`,
-        metadata: { errorCode, isOutcomeUnknown },
+        metadata: { errorCode, isOutcomeUnknown, correlationId },
       },
     });
   });

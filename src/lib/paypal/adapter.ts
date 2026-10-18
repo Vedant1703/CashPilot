@@ -209,7 +209,8 @@ export async function getPayPalAccessToken(): Promise<string | null> {
  * @returns PayPalApiResult with the new provider invoice ID on success
  */
 export async function createPayPalDraftInvoice(
-  payload: PayPalInvoicePayload
+  payload: PayPalInvoicePayload,
+  requestId?: string
 ): Promise<PayPalApiResult<PayPalInvoiceResponse>> {
   const env = getServerEnv();
   const token = await getPayPalAccessToken();
@@ -226,13 +227,19 @@ export async function createPayPalDraftInvoice(
 
   const url = `${env.PAYPAL_BASE_URL}/v2/invoicing/invoices`;
 
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    Prefer: "return=representation",
+  };
+
+  if (requestId) {
+    headers["PayPal-Request-Id"] = requestId;
+  }
+
   const fetchResult = await fetchWithTimeout(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation",
-    },
+    headers,
     body: JSON.stringify(payload),
   });
 

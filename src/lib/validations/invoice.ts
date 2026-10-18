@@ -210,3 +210,12 @@ export const approveInvoiceRequestSchema = z.object({
 
 export type ApproveInvoiceRequest = z.infer<typeof approveInvoiceRequestSchema>;
 
+export const createPayPalDraftRequestSchema = z
+  .object({
+    approvalId: z.string().min(1).optional(),
+  })
+  .optional()
+  .default({});
+
+export type CreatePayPalDraftRequest = z.infer<typeof createPayPalDraftRequestSchema>;
+
