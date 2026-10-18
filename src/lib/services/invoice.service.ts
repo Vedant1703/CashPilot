@@ -56,17 +56,26 @@ export type ServiceResult<T> =
 // SRS §4: Bind approval to the exact material payload
 // ─────────────────────────────────────────────────────────────────────────────
 
-function hashApprovalPayload(payload: ApprovalPayload): string {
-  const canonicalJson = JSON.stringify({
-    invoiceId: payload.invoiceId,
-    workspaceId: payload.workspaceId,
-    actionType: payload.actionType,
-    recipientEmail: payload.recipientEmail,
-    totalMinorUnits: payload.totalMinorUnits,
-    currency: payload.currency,
-    dueDate: payload.dueDate,
-  });
-  return createHash("sha256").update(canonicalJson).digest("hex");
+function canonicalStringify(obj: unknown): string {
+  if (obj === null || typeof obj !== "object") {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return "[" + obj.map(canonicalStringify).join(",") + "]";
+  }
+  const keys = Object.keys(obj as Record<string, unknown>).sort();
+  return (
+    "{" +
+    keys
+      .map(
+        (k) =>
+          JSON.stringify(k) +
+          ":" +
+          canonicalStringify((obj as Record<string, unknown>)[k])
+      )
+      .join(",") +
+    "}"
+  );
 }
 
 export function computeMaterialPayloadHash(invoice: {
@@ -77,20 +86,30 @@ export function computeMaterialPayloadHash(invoice: {
   currency: string;
   dueDate: Date | string;
   actionType?: "SEND_INVOICE" | "SEND_REMINDER" | "CANCEL_INVOICE";
+  lineItems?: Array<{
+    description: string;
+    quantity: number;
+    unitPriceMinorUnits: number;
+  }>;
 }): string {
-  const canonicalJson = JSON.stringify({
-    invoiceId: invoice.id,
-    workspaceId: invoice.workspaceId,
+  const canonical = {
     actionType: invoice.actionType ?? "SEND_INVOICE",
-    recipientEmail: invoice.client.email,
-    totalMinorUnits: invoice.totalMinorUnits,
     currency: invoice.currency,
     dueDate:
       typeof invoice.dueDate === "string"
         ? invoice.dueDate.substring(0, 10)
         : invoice.dueDate.toISOString().substring(0, 10),
-  });
-  return createHash("sha256").update(canonicalJson).digest("hex");
+    invoiceId: invoice.id,
+    lineItems: (invoice.lineItems || []).map((li) => ({
+      description: li.description,
+      quantity: li.quantity,
+      unitPriceMinorUnits: li.unitPriceMinorUnits,
+    })),
+    recipientEmail: invoice.client.email,
+    totalMinorUnits: invoice.totalMinorUnits,
+    workspaceId: invoice.workspaceId,
+  };
+  return createHash("sha256").update(canonicalStringify(canonical)).digest("hex");
 }
 
 function buildApprovalPayload(
@@ -394,9 +413,12 @@ export async function createApproval(
     return { ok: false, error: "Invoice not found", code: "NOT_FOUND" };
   }
 
-  // Build the material payload snapshot
+  // Build the material payload snapshot and compute canonical hash
   const payload = buildApprovalPayload(invoice, actionType);
-  const payloadHash = hashApprovalPayload(payload);
+  const payloadHash = computeMaterialPayloadHash({
+    ...invoice,
+    actionType,
+  });
 
   // Invalidate any previously PENDING approvals for the same invoice+action
   await db.approval.updateMany({
@@ -502,6 +524,176 @@ export async function confirmApproval(
   return { ok: true, data: { approvalId } };
 }
 
+export interface ApproveInvoiceResult {
+  approvalId: string;
+  invoiceId: string;
+  actionType: ApprovalAction;
+  status: ApprovalStatus;
+  approvedPayloadHash: string;
+  approvedAt: Date;
+  expiresAt: Date;
+}
+
+/**
+ * Approve an invoice action (POST /api/invoices/[id]/approve).
+ *
+ * Verifies that the invoice is in an acceptable state, recalculates the authoritative
+ * material payload hash on the server, rejects stale hashes (i.e. if the invoice
+ * changed after review), and transactionally records the approved state with full
+ * concurrency protections and an append-only audit event.
+ */
+export async function approveInvoice(
+  workspaceId: string,
+  actorId: string,
+  invoiceId: string,
+  actionType: ApprovalAction,
+  reviewedPayloadHash: string
+): Promise<ServiceResult<ApproveInvoiceResult>> {
+  // 1. Fetch current invoice with client and line items
+  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  if (!invoice) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  // 2. Validate invoice workflow state
+  if (
+    actionType === ApprovalAction.SEND_INVOICE &&
+    invoice.cashpilotStatus !== CashPilotStatus.DRAFT
+  ) {
+    return {
+      ok: false,
+      error: `Only DRAFT invoices can be approved for sending (current status: ${invoice.cashpilotStatus})`,
+      code: "INVALID_INVOICE_STATUS",
+    };
+  }
+
+  // 3. Compute authoritative current material payload hash on server
+  const currentPayloadHash = computeMaterialPayloadHash({
+    ...invoice,
+    actionType,
+  });
+
+  // 4. Stale review check: hash MUST match what the user reviewed
+  if (reviewedPayloadHash !== currentPayloadHash) {
+    return {
+      ok: false,
+      error:
+        "The invoice has changed since review. The reviewed hash does not match the current material payload hash. Please review the updated invoice and approve again.",
+      code: "STALE_PAYLOAD_HASH",
+    };
+  }
+
+  // 5. Execute approval creation transactionally with idempotency & concurrency protection
+  return db.$transaction(async (tx) => {
+    // Check if an identical active approval already exists for this exact hash
+    const existing = await tx.approval.findFirst({
+      where: {
+        invoiceId,
+        workspaceId,
+        actionType,
+        payloadHash: currentPayloadHash,
+        status: ApprovalStatus.APPROVED,
+        expiresAt: { gt: new Date() },
+      },
+    });
+
+    if (existing && existing.approvedAt && existing.expiresAt) {
+      return {
+        ok: true,
+        data: {
+          approvalId: existing.id,
+          invoiceId,
+          actionType,
+          status: existing.status,
+          approvedPayloadHash: existing.payloadHash,
+          approvedAt: existing.approvedAt,
+          expiresAt: existing.expiresAt,
+        },
+      };
+    }
+
+    // Invalidate any previously active/pending approvals for this invoice + action
+    await tx.approval.updateMany({
+      where: {
+        invoiceId,
+        workspaceId,
+        actionType,
+        status: { in: [ApprovalStatus.PENDING, ApprovalStatus.APPROVED] },
+      },
+      data: {
+        status: ApprovalStatus.INVALIDATED,
+        invalidatedAt: new Date(),
+        invalidationReason: "Superseded by new approval confirmation",
+      },
+    });
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 15 * 60 * 1000); // 15-minute expiry window
+
+    const payloadSnapshot = {
+      invoiceId: invoice.id,
+      workspaceId: invoice.workspaceId,
+      actionType,
+      recipientEmail: invoice.client.email,
+      totalMinorUnits: invoice.totalMinorUnits,
+      currency: invoice.currency,
+      dueDate: invoice.dueDate.toISOString().substring(0, 10),
+      lineItems: invoice.lineItems.map((li) => ({
+        description: li.description,
+        quantity: li.quantity,
+        unitPriceMinorUnits: li.unitPriceMinorUnits,
+        totalMinorUnits: li.totalMinorUnits,
+      })),
+      timestamp: now.toISOString(),
+    };
+
+    const approval = await tx.approval.create({
+      data: {
+        workspaceId,
+        invoiceId,
+        actorId,
+        actionType,
+        payloadHash: currentPayloadHash,
+        payloadSnapshot: payloadSnapshot as unknown as Prisma.InputJsonValue,
+        status: ApprovalStatus.APPROVED,
+        approvedAt: now,
+        expiresAt,
+      },
+    });
+
+    await tx.activityEvent.create({
+      data: {
+        workspaceId,
+        invoiceId,
+        approvalId: approval.id,
+        eventType: ActivityEventType.APPROVAL_APPROVED,
+        actorType: ActorType.USER,
+        actorId,
+        description: `Invoice approval confirmed for action: ${actionType} locked to hash ${currentPayloadHash.slice(0, 8)}...`,
+        metadata: {
+          actionType,
+          payloadHash: currentPayloadHash,
+          totalMinorUnits: invoice.totalMinorUnits,
+          currency: invoice.currency,
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      data: {
+        approvalId: approval.id,
+        invoiceId,
+        actionType,
+        status: approval.status,
+        approvedPayloadHash: currentPayloadHash,
+        approvedAt: approval.approvedAt!,
+        expiresAt: approval.expiresAt!,
+      },
+    };
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PayPal Operations — Require Valid Approval
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,8 +733,10 @@ export async function executeApprovedSend(
   }
 
   // ── 2. Verify the invoice material fields still match the approved payload ─
-  const currentPayload = buildApprovalPayload(approval.invoice, "SEND_INVOICE");
-  const currentHash = hashApprovalPayload(currentPayload);
+  const currentHash = computeMaterialPayloadHash({
+    ...approval.invoice,
+    actionType: approval.actionType,
+  });
 
   if (currentHash !== approval.payloadHash) {
     // Material field has changed — invalidate approval

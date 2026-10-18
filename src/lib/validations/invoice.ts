@@ -180,8 +180,8 @@ export type AiInvoiceDraft = z.infer<typeof aiInvoiceDraftSchema>;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const approvalPayloadSchema = z.object({
-  invoiceId: z.string().cuid(),
-  workspaceId: z.string().cuid(),
+  invoiceId: z.string().min(1),
+  workspaceId: z.string().min(1),
   actionType: z.enum(["SEND_INVOICE", "SEND_REMINDER", "CANCEL_INVOICE"]),
 
   // Material fields for SEND_INVOICE
@@ -193,7 +193,20 @@ export const approvalPayloadSchema = z.object({
   // Version binding — hash of the invoice's material state
   invoiceVersion: z.string().optional(),
 
-  timestamp: z.string().datetime(),
+  timestamp: z.string().datetime().optional(),
 });
 
 export type ApprovalPayload = z.infer<typeof approvalPayloadSchema>;
+
+export const approveInvoiceRequestSchema = z.object({
+  actionType: z
+    .enum(["SEND_INVOICE", "SEND_REMINDER", "CANCEL_INVOICE"])
+    .default("SEND_INVOICE"),
+  reviewedPayloadHash: z
+    .string({ required_error: "Reviewed payload hash is required" })
+    .length(64, "Reviewed payload hash must be a 64-character SHA-256 hex string")
+    .regex(/^[a-f0-9]{64}$/, "Reviewed payload hash must be a valid 64-character hex string"),
+});
+
+export type ApproveInvoiceRequest = z.infer<typeof approveInvoiceRequestSchema>;
+
