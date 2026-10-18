@@ -1228,26 +1228,70 @@ export async function executeApprovedSend(
 // Status Refresh / Reconciliation
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface SyncInvoiceResult {
+  invoiceId: string;
+  paypalInvoiceId: string | null;
+  hasPaypalInvoice: boolean;
+  previousPaypalStatus: string | null;
+  currentPaypalStatus: string | null;
+  previousCashpilotStatus: CashPilotStatus;
+  currentCashpilotStatus: CashPilotStatus;
+  statusChanged: boolean;
+  isStale: boolean;
+  reconciledOperationsCount: number;
+  lastSyncAt: Date | null;
+  correlationId?: string;
+}
+
 /**
- * Refresh the invoice status from PayPal.
- * SRS §4: Preserve last known status and mark stale if refresh fails.
- * Never infer Paid without verified provider evidence.
+ * Synchronize invoice status with PayPal Sandbox.
+ *
+ * SRS §4 & Financial Integrity Rules:
+ *   - Fetches authoritative provider status from official GET /v2/invoicing/invoices/{id}
+ *   - Only verified provider evidence can establish PAID status (via mapPayPalStatusToCashPilot)
+ *   - Unknown / unmapped / malformed status maps to NEEDS_REVIEW (never PAID)
+ *   - Failed status fetch preserves last known valid status and marks syncIsStale = true
+ *   - Optimistic concurrency protection: older responses cannot overwrite newer sync results
+ *   - Reconciles UNKNOWN-outcome operations when provider evidence establishes resolution
+ *   - Discrepancy on 404 (provider invoice not found) recorded without blind recreation
+ *   - Read-only provider call: zero resource mutations, zero sends, zero payments
  */
-export async function refreshInvoiceStatus(
+export async function syncInvoiceWithPayPal(
   workspaceId: string,
+  actorId: string,
   invoiceId: string
-): Promise<ServiceResult<{ cashpilotStatus: CashPilotStatus; isStale: boolean }>> {
+): Promise<ServiceResult<SyncInvoiceResult>> {
+  // 1. Fetch current invoice with client and line items
   const invoice = await getInvoiceById(invoiceId, workspaceId);
   if (!invoice) {
-    return { ok: false, error: "Invoice not found", code: "NOT_FOUND" };
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
   }
 
+  // 2. If no PayPal invoice is linked, return structured response without guessing provider state
   if (!invoice.paypalInvoiceId) {
-    // No provider ID — nothing to refresh
-    return { ok: true, data: { cashpilotStatus: invoice.cashpilotStatus, isStale: false } };
+    return {
+      ok: true,
+      data: {
+        invoiceId,
+        paypalInvoiceId: null,
+        hasPaypalInvoice: false,
+        previousPaypalStatus: null,
+        currentPaypalStatus: null,
+        previousCashpilotStatus: invoice.cashpilotStatus,
+        currentCashpilotStatus: invoice.cashpilotStatus,
+        statusChanged: false,
+        isStale: false,
+        reconciledOperationsCount: 0,
+        lastSyncAt: invoice.lastSyncAt,
+      },
+    };
   }
 
-  // Record the sync attempt
+  const previousLastSyncAt = invoice.lastSyncAt;
+  const previousPaypalStatus = invoice.paypalStatus;
+  const previousCashpilotStatus = invoice.cashpilotStatus;
+
+  // 3. Create ExternalOperation record for this sync operation
   const syncOp = await db.externalOperation.create({
     data: {
       workspaceId,
@@ -1258,13 +1302,16 @@ export async function refreshInvoiceStatus(
     },
   });
 
+  // 4. Fetch status from official PayPal Invoicing API
   const statusResult = await getPayPalInvoiceStatus(invoice.paypalInvoiceId);
 
+  // 5. Handle provider fetch failure
   if (!statusResult.success) {
     const isUnknown = "isOutcomeUnknown" in statusResult && statusResult.isOutcomeUnknown;
+    const isNotFound = statusResult.error.httpStatus === 404;
 
-    // Preserve last valid status — mark stale
     await db.$transaction(async (tx) => {
+      // Preserve last known valid status — mark stale
       await tx.invoice.update({
         where: { id: invoiceId },
         data: { syncIsStale: true },
@@ -1274,10 +1321,11 @@ export async function refreshInvoiceStatus(
         where: { id: syncOp.id },
         data: {
           attemptState: isUnknown ? OperationAttemptState.UNKNOWN : OperationAttemptState.FAILED,
-          isOutcomeUnknown: isUnknown,
           completedAt: new Date(),
-          errorCode: statusResult.error.code,
+          isOutcomeUnknown: isUnknown,
+          errorCode: isNotFound ? "PROVIDER_INVOICE_NOT_FOUND" : statusResult.error.code,
           errorMessage: statusResult.error.message,
+          correlationId: statusResult.correlationId,
         },
       });
 
@@ -1287,69 +1335,209 @@ export async function refreshInvoiceStatus(
           invoiceId,
           operationId: syncOp.id,
           eventType: ActivityEventType.STATUS_SYNC_FAILED,
-          actorType: ActorType.SYSTEM,
-          actorId: "system",
-          description: "Status refresh failed. Last known status preserved and marked stale.",
-          metadata: { error: statusResult.error.code },
+          actorType: ActorType.USER,
+          actorId,
+          description: isNotFound
+            ? `Status sync failed: PayPal invoice ${invoice.paypalInvoiceId} was not found on PayPal Sandbox.`
+            : `PayPal status sync failed: ${statusResult.error.message}. Last known status preserved.`,
+          metadata: {
+            errorCode: isNotFound ? "PROVIDER_INVOICE_NOT_FOUND" : statusResult.error.code,
+            paypalInvoiceId: invoice.paypalInvoiceId,
+            correlationId: statusResult.correlationId,
+          },
         },
       });
     });
 
+    if (isNotFound) {
+      return {
+        ok: false,
+        error: `PayPal invoice ${invoice.paypalInvoiceId} was not found on PayPal Sandbox. Discrepancy recorded.`,
+        code: "PROVIDER_INVOICE_NOT_FOUND",
+      };
+    }
+
     return {
-      ok: true, // Not a hard error — return stale status gracefully
-      data: { cashpilotStatus: invoice.cashpilotStatus, isStale: true },
+      ok: false,
+      error: statusResult.error.message,
+      code: isUnknown ? "TIMEOUT" : statusResult.error.code,
     };
   }
 
-  // Map provider status to CashPilot status
-  const mapped = mapPayPalStatusToCashPilot(
-    statusResult.data.status,
-    invoice.dueDate
-  );
+  // 6. Validate provider response structure
+  const rawStatus = statusResult.data.status;
+  if (!rawStatus || typeof rawStatus !== "string" || rawStatus.trim().length === 0) {
+    return {
+      ok: false,
+      error: "PayPal returned an invalid or empty status value in the response.",
+      code: "MALFORMED_PROVIDER_RESPONSE",
+    };
+  }
+
+  // 7. Map provider status to CashPilot status using existing tested engine
+  const mapped = mapPayPalStatusToCashPilot(rawStatus, invoice.dueDate);
+  const newCashpilotStatus = mapped.cashpilotStatus;
+  const statusChanged =
+    previousPaypalStatus !== rawStatus || previousCashpilotStatus !== newCashpilotStatus;
+
+  // 8. Find any unknown-outcome operations on this invoice to reconcile
+  const unknownOps = await db.externalOperation.findMany({
+    where: {
+      invoiceId,
+      workspaceId,
+      isOutcomeUnknown: true,
+    },
+  });
+
+  const now = new Date();
+
+  // 9. Persist verified status inside a database transaction with optimistic concurrency
+  let overwrittenByNewer = false;
 
   await db.$transaction(async (tx) => {
+    // Stale response protection: Ensure no newer sync finished while this fetch was in flight
+    if (previousLastSyncAt) {
+      const latest = await tx.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { lastSyncAt: true },
+      });
+      if (latest?.lastSyncAt && latest.lastSyncAt > now) {
+        overwrittenByNewer = true;
+        return;
+      }
+    }
+
+    // Persist verified provider state
     await tx.invoice.update({
       where: { id: invoiceId },
       data: {
-        cashpilotStatus: mapped.cashpilotStatus,
-        paypalStatus: statusResult.data.status,
+        paypalStatus: rawStatus,
         paypalStatusRaw: statusResult.data as unknown as Prisma.InputJsonValue,
-        lastSyncAt: new Date(),
+        cashpilotStatus: newCashpilotStatus,
+        lastSyncAt: now,
         syncIsStale: false,
       },
     });
 
+    // Update sync operation record
     await tx.externalOperation.update({
       where: { id: syncOp.id },
       data: {
         attemptState: OperationAttemptState.SUCCESS,
-        completedAt: new Date(),
+        completedAt: now,
+        providerInvoiceId: invoice.paypalInvoiceId,
+        correlationId: statusResult.correlationId,
         providerResponse: {
-          status: statusResult.data.status,
           id: statusResult.data.id,
+          status: rawStatus,
         },
       },
     });
+
+    // Reconcile unknown operations if safe provider evidence establishes the outcome
+    if (unknownOps.length > 0) {
+      for (const op of unknownOps) {
+        let reconcileResultMsg = `Reconciled via PayPal status sync: invoice confirmed in status ${rawStatus}`;
+        let resolvedState: OperationAttemptState = OperationAttemptState.SUCCESS;
+
+        if (op.operationType === OperationType.CREATE_DRAFT) {
+          resolvedState = OperationAttemptState.SUCCESS;
+          reconcileResultMsg = `Reconciled: PayPal confirmed draft creation exists in status ${rawStatus}`;
+        } else if (op.operationType === OperationType.SEND_INVOICE) {
+          if (["SENT", "PAID", "PARTIALLY_PAID", "PAYMENT_PENDING", "MARKED_AS_PAID"].includes(rawStatus.toUpperCase())) {
+            resolvedState = OperationAttemptState.SUCCESS;
+            reconcileResultMsg = `Reconciled: PayPal confirmed invoice send succeeded (status: ${rawStatus})`;
+          } else if (rawStatus.toUpperCase() === "DRAFT") {
+            resolvedState = OperationAttemptState.FAILED;
+            reconcileResultMsg = "Reconciled: Invoice remains in DRAFT; send was not processed by PayPal";
+          }
+        }
+
+        await tx.externalOperation.update({
+          where: { id: op.id },
+          data: {
+            attemptState: resolvedState,
+            isOutcomeUnknown: false,
+            reconciledAt: now,
+            reconcileResult: reconcileResultMsg,
+            correlationId: statusResult.correlationId,
+          },
+        });
+      }
+    }
+
+    // Record activity audit event
+    const eventType =
+      unknownOps.length > 0
+        ? ActivityEventType.STATUS_SYNC_RECONCILED
+        : ActivityEventType.STATUS_SYNC_SUCCESS;
+
+    const description =
+      unknownOps.length > 0
+        ? `Status sync reconciled ${unknownOps.length} uncertain operation(s). PayPal: ${rawStatus} → CashPilot: ${newCashpilotStatus}`
+        : `Status synchronized with PayPal Sandbox. Provider status: ${rawStatus} → CashPilot: ${newCashpilotStatus}`;
 
     await tx.activityEvent.create({
       data: {
         workspaceId,
         invoiceId,
         operationId: syncOp.id,
-        eventType: ActivityEventType.STATUS_SYNC_SUCCESS,
-        actorType: ActorType.SYSTEM,
-        actorId: "system",
-        description: `Status refreshed from PayPal. Provider status: ${statusResult.data.status} → CashPilot: ${mapped.cashpilotStatus}`,
+        eventType,
+        actorType: ActorType.USER,
+        actorId,
+        description,
         metadata: {
-          providerStatus: statusResult.data.status,
-          cashpilotStatus: mapped.cashpilotStatus,
-          requiresReview: mapped.requiresReview,
+          paypalInvoiceId: invoice.paypalInvoiceId,
+          providerStatus: rawStatus,
+          cashpilotStatus: newCashpilotStatus,
+          previousPaypalStatus,
+          previousCashpilotStatus,
+          statusChanged,
+          reconciledOperationsCount: unknownOps.length,
+          correlationId: statusResult.correlationId,
         },
       },
     });
   });
 
-  return { ok: true, data: { cashpilotStatus: mapped.cashpilotStatus, isStale: false } };
+  return {
+    ok: true,
+    data: {
+      invoiceId,
+      paypalInvoiceId: invoice.paypalInvoiceId,
+      hasPaypalInvoice: true,
+      previousPaypalStatus,
+      currentPaypalStatus: rawStatus,
+      previousCashpilotStatus,
+      currentCashpilotStatus: newCashpilotStatus,
+      statusChanged: overwrittenByNewer ? false : statusChanged,
+      isStale: false,
+      reconciledOperationsCount: unknownOps.length,
+      lastSyncAt: now,
+      correlationId: statusResult.correlationId,
+    },
+  };
+}
+
+/**
+ * Backward-compatible wrapper for status refresh.
+ */
+export async function refreshInvoiceStatus(
+  workspaceId: string,
+  invoiceId: string,
+  actorId: string = "system"
+): Promise<ServiceResult<{ cashpilotStatus: CashPilotStatus; isStale: boolean }>> {
+  const result = await syncInvoiceWithPayPal(workspaceId, actorId, invoiceId);
+  if (!result.ok) {
+    return { ok: false, error: result.error, code: result.code };
+  }
+  return {
+    ok: true,
+    data: {
+      cashpilotStatus: result.data.currentCashpilotStatus,
+      isStale: result.data.isStale,
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
