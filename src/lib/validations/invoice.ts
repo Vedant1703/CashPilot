@@ -219,3 +219,12 @@ export const createPayPalDraftRequestSchema = z
 
 export type CreatePayPalDraftRequest = z.infer<typeof createPayPalDraftRequestSchema>;
 
+export const sendInvoiceRequestSchema = z
+  .object({
+    approvalId: z.string().min(1, "Approval ID must not be empty").optional(),
+  })
+  .optional()
+  .default({});
+
+export type SendInvoiceRequest = z.infer<typeof sendInvoiceRequestSchema>;
+

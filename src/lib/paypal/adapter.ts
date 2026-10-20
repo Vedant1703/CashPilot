@@ -284,7 +284,8 @@ export async function createPayPalDraftInvoice(
  * Never transition to PAID based on this response.
  */
 export async function sendPayPalInvoice(
-  paypalInvoiceId: string
+  paypalInvoiceId: string,
+  requestId?: string
 ): Promise<PayPalApiResult<{ sent: true }>> {
   const env = getServerEnv();
   const token = await getPayPalAccessToken();
@@ -301,13 +302,19 @@ export async function sendPayPalInvoice(
 
   const url = `${env.PAYPAL_BASE_URL}/v2/invoicing/invoices/${paypalInvoiceId}/send`;
 
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+
+  if (requestId) {
+    headers["PayPal-Request-Id"] = requestId;
+  }
+
   const fetchResult = await fetchWithTimeout(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ send_to_invoicer: true }),
+    headers,
+    body: JSON.stringify({ send_to_invoicer: true, send_to_recipient: true }),
   });
 
   if (fetchResult.timedOut) {
@@ -324,8 +331,8 @@ export async function sendPayPalInvoice(
   const { response } = fetchResult;
   const correlationId = response.headers.get("paypal-debug-id") ?? undefined;
 
-  // PayPal returns 202 Accepted for successful sends
-  if (response.status === 202 || response.status === 200) {
+  // PayPal returns 202 Accepted, 200 OK, or 204 No Content for successful sends
+  if (response.status === 202 || response.status === 200 || response.status === 204) {
     return { success: true, data: { sent: true }, correlationId };
   }
 

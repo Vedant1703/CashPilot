@@ -977,50 +977,257 @@ export async function createPayPalDraft(
   };
 }
 
+export interface SendInvoiceResult {
+  operationId: string;
+  invoiceId: string;
+  paypalInvoiceId: string;
+  paypalStatus: string;
+  cashpilotStatus: CashPilotStatus;
+  isAlreadySent: boolean;
+  sentAt: Date;
+  correlationId?: string;
+}
+
 /**
- * Execute an approved invoice send operation.
- * This is the ONLY path that can result in a PayPal invoice being sent.
+ * Execute an approved invoice send operation against PayPal Sandbox.
  *
- * SRS §4: Revalidate authorization, approval, and payload version immediately
- * before executing. A successful send does NOT transition to PAID.
+ * SRS §4 & Financial Integrity Rules:
+ *   - Human approval required: MUST have an active SEND_INVOICE approval
+ *   - Approval bound to exact current material payload hash (recomputed server-side)
+ *   - Stale/modified invoice invalidates approval and rejects send (409 Conflict)
+ *   - Requires PayPal draft to ALREADY exist; NEVER creates a draft as part of sending
+ *   - Validates that recipient, amount, currency match approved snapshot
+ *   - Idempotent: Subsequent duplicate send requests return known result without resending
+ *   - Prevents concurrent requests from sending the same invoice simultaneously
+ *   - Timeouts / uncertain outcomes recorded as UNKNOWN; blind retries blocked
+ *   - DB persistence failure after provider response marks outcome unknown for reconciliation
+ *   - A successful send NEVER marks invoice as PAID (transitions to AWAITING_PAYMENT / DUE_SOON / OVERDUE)
+ *   - Raw provider status (SENT) and CashPilot status remain strictly separate
  */
-export async function executeApprovedSend(
+export async function sendInvoice(
   workspaceId: string,
   actorId: string,
-  approvalId: string
-): Promise<ServiceResult<{ operationId: string; paypalInvoiceId?: string }>> {
-  // ── 1. Load and re-validate approval immediately before execution ──────────
-  const approval = await db.approval.findFirst({
-    where: { id: approvalId, workspaceId },
-    include: { invoice: { include: { client: true, lineItems: true } } },
-  });
-
-  if (!approval) {
-    return { ok: false, error: "Approval not found", code: "NOT_FOUND" };
+  invoiceId: string,
+  explicitApprovalId?: string
+): Promise<ServiceResult<SendInvoiceResult>> {
+  // 1. Fetch current invoice with client and line items
+  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  if (!invoice) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
   }
 
-  if (approval.status !== ApprovalStatus.APPROVED) {
+  // 2. Check if invoice has already been sent to PayPal (Idempotency check)
+  const existingSuccess = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.SEND_INVOICE,
+      attemptState: OperationAttemptState.SUCCESS,
+    },
+    orderBy: { completedAt: "desc" },
+  });
+
+  if (
+    existingSuccess ||
+    invoice.paypalStatus === "SENT" ||
+    invoice.cashpilotStatus === CashPilotStatus.AWAITING_PAYMENT ||
+    invoice.cashpilotStatus === CashPilotStatus.DUE_SOON ||
+    invoice.cashpilotStatus === CashPilotStatus.OVERDUE
+  ) {
     return {
-      ok: false,
-      error: `Approval is not APPROVED (current: ${approval.status})`,
-      code: "APPROVAL_NOT_APPROVED",
+      ok: true,
+      data: {
+        operationId: existingSuccess?.id ?? "already-sent",
+        invoiceId: invoice.id,
+        paypalInvoiceId: invoice.paypalInvoiceId ?? "unknown",
+        paypalStatus: invoice.paypalStatus ?? "SENT",
+        cashpilotStatus: invoice.cashpilotStatus,
+        isAlreadySent: true,
+        sentAt: existingSuccess?.completedAt ?? invoice.updatedAt,
+        correlationId: existingSuccess?.correlationId ?? undefined,
+      },
     };
   }
 
-  if (!approval.invoice) {
-    return { ok: false, error: "Invoice not found on approval", code: "NOT_FOUND" };
+  // 3. Verify invoice workflow state permits sending (must be DRAFT)
+  if (!canSendToPayPal(invoice.cashpilotStatus)) {
+    return {
+      ok: false,
+      error: `Invoice cannot be sent in current status: ${invoice.cashpilotStatus}. Only DRAFT invoices can be sent.`,
+      code: "INVALID_INVOICE_STATE",
+    };
   }
 
-  // ── 2. Verify the invoice material fields still match the approved payload ─
+  // 4. Verify that PayPal draft already exists (Send must NOT create drafts)
+  if (!invoice.paypalInvoiceId) {
+    return {
+      ok: false,
+      error: "No PayPal draft exists for this invoice. A draft must be created via /api/invoices/[id]/paypal-draft before sending.",
+      code: "PAYPAL_DRAFT_REQUIRED",
+    };
+  }
+
+  // 5. Check for prior unknown-outcome operations to prevent blind retry
+  const unknownOp = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.SEND_INVOICE,
+      isOutcomeUnknown: true,
+    },
+  });
+
+  if (unknownOp) {
+    return {
+      ok: false,
+      error: "A previous send operation has an unknown outcome (timed out). Please synchronize status via /api/invoices/[id]/sync before retrying.",
+      code: "PENDING_UNKNOWN_OPERATION",
+    };
+  }
+
+  // 6. Check for concurrent in-flight send operation
+  const inFlightOp = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.SEND_INVOICE,
+      attemptState: OperationAttemptState.IN_FLIGHT,
+      attemptedAt: { gt: new Date(Date.now() - 30_000) },
+    },
+  });
+
+  if (inFlightOp) {
+    return {
+      ok: false,
+      error: "A send operation is currently in flight for this invoice. Please wait.",
+      code: "OPERATION_IN_FLIGHT",
+    };
+  }
+
+  // 7. Locate and validate the approval
+  let approval;
+  if (explicitApprovalId) {
+    approval = await db.approval.findFirst({
+      where: { id: explicitApprovalId, workspaceId, invoiceId },
+    });
+
+    if (!approval) {
+      return {
+        ok: false,
+        error: "The specified approval does not exist for this invoice and workspace.",
+        code: "APPROVAL_NOT_FOUND",
+      };
+    }
+
+    if (approval.actionType !== ApprovalAction.SEND_INVOICE) {
+      return {
+        ok: false,
+        error: `Approval action is ${approval.actionType}, but SEND_INVOICE is required.`,
+        code: "INVALID_APPROVAL_ACTION",
+      };
+    }
+
+    if (approval.status === ApprovalStatus.INVALIDATED) {
+      return {
+        ok: false,
+        error: "Approval was invalidated because invoice details changed. Please review and approve again.",
+        code: "APPROVAL_INVALIDATED",
+      };
+    }
+
+    if (approval.status === ApprovalStatus.USED) {
+      return {
+        ok: false,
+        error: "Approval has already been consumed by a prior operation.",
+        code: "APPROVAL_USED",
+      };
+    }
+
+    if (
+      approval.status === ApprovalStatus.EXPIRED ||
+      (approval.expiresAt && approval.expiresAt < new Date())
+    ) {
+      return {
+        ok: false,
+        error: "The approval for this invoice has expired. Please review and re-approve.",
+        code: "APPROVAL_EXPIRED",
+      };
+    }
+
+    if (approval.status !== ApprovalStatus.APPROVED) {
+      return {
+        ok: false,
+        error: `Approval is not in APPROVED state (current: ${approval.status}).`,
+        code: "APPROVAL_NOT_APPROVED",
+      };
+    }
+  } else {
+    approval = await db.approval.findFirst({
+      where: {
+        invoiceId,
+        workspaceId,
+        actionType: ApprovalAction.SEND_INVOICE,
+        status: ApprovalStatus.APPROVED,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!approval) {
+      const anyApproval = await db.approval.findFirst({
+        where: { invoiceId, workspaceId, actionType: ApprovalAction.SEND_INVOICE },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (
+        anyApproval?.status === ApprovalStatus.EXPIRED ||
+        (anyApproval?.expiresAt && anyApproval.expiresAt < new Date())
+      ) {
+        return {
+          ok: false,
+          error: "The approval for this invoice has expired. Please review and re-approve.",
+          code: "APPROVAL_EXPIRED",
+        };
+      }
+      if (anyApproval?.status === ApprovalStatus.INVALIDATED) {
+        return {
+          ok: false,
+          error: "Approval was invalidated because invoice details changed. Please review and approve again.",
+          code: "APPROVAL_INVALIDATED",
+        };
+      }
+      if (anyApproval?.status === ApprovalStatus.USED) {
+        return {
+          ok: false,
+          error: "Approval has already been consumed by a prior operation.",
+          code: "APPROVAL_USED",
+        };
+      }
+
+      return {
+        ok: false,
+        error: "An approved SEND_INVOICE action is required before sending to PayPal.",
+        code: "APPROVAL_REQUIRED",
+      };
+    }
+
+    if (approval.expiresAt && approval.expiresAt < new Date()) {
+      return {
+        ok: false,
+        error: "The approval for this invoice has expired. Please review and re-approve.",
+        code: "APPROVAL_EXPIRED",
+      };
+    }
+  }
+
+  // 8. Recompute authoritative material hash on server & check for stale approval
   const currentHash = computeMaterialPayloadHash({
-    ...approval.invoice,
+    ...invoice,
     actionType: approval.actionType,
   });
 
   if (currentHash !== approval.payloadHash) {
-    // Material field has changed — invalidate approval
     await db.approval.update({
-      where: { id: approvalId },
+      where: { id: approval.id },
       data: {
         status: ApprovalStatus.INVALIDATED,
         invalidatedAt: new Date(),
@@ -1031,8 +1238,8 @@ export async function executeApprovedSend(
     await db.activityEvent.create({
       data: {
         workspaceId,
-        invoiceId: approval.invoiceId ?? undefined,
-        approvalId,
+        invoiceId,
+        approvalId: approval.id,
         eventType: ActivityEventType.APPROVAL_INVALIDATED,
         actorType: ActorType.SYSTEM,
         actorId: "system",
@@ -1043,185 +1250,215 @@ export async function executeApprovedSend(
 
     return {
       ok: false,
-      error: "Invoice was modified after approval. Please review and re-approve.",
-      code: "PAYLOAD_MISMATCH",
+      error: "Invoice was modified after approval. Approval invalidated. Please review and re-approve.",
+      code: "APPROVAL_STALE",
     };
   }
 
-  // ── 3. Verify invoice state permits sending ────────────────────────────────
-  const invoice = approval.invoice;
-  if (!canSendToPayPal(invoice.cashpilotStatus)) {
-    return {
-      ok: false,
-      error: `Invoice cannot be sent in state: ${invoice.cashpilotStatus}`,
-      code: "INVALID_INVOICE_STATE",
-    };
+  // 9. Verify that recipient and amount being sent match the approved payload snapshot
+  if (approval.payloadSnapshot && typeof approval.payloadSnapshot === "object") {
+    const snapshot = approval.payloadSnapshot as Record<string, unknown>;
+    if (snapshot.recipientEmail && snapshot.recipientEmail !== invoice.client.email) {
+      return {
+        ok: false,
+        error: "Recipient email does not match approved payload snapshot.",
+        code: "PAYLOAD_SNAPSHOT_MISMATCH",
+      };
+    }
+    if (snapshot.totalMinorUnits !== undefined && snapshot.totalMinorUnits !== invoice.totalMinorUnits) {
+      return {
+        ok: false,
+        error: "Invoice total does not match approved payload snapshot.",
+        code: "PAYLOAD_SNAPSHOT_MISMATCH",
+      };
+    }
+    if (snapshot.currency && snapshot.currency !== invoice.currency) {
+      return {
+        ok: false,
+        error: "Invoice currency does not match approved payload snapshot.",
+        code: "PAYLOAD_SNAPSHOT_MISMATCH",
+      };
+    }
   }
 
-  // ── 4. Check for existing unknown-outcome operations (prevent duplicate) ───
-  const pendingOp = await db.externalOperation.findFirst({
-    where: {
-      invoiceId: invoice.id,
-      operationType: OperationType.SEND_INVOICE,
-      isOutcomeUnknown: true,
-    },
-  });
-
-  if (pendingOp) {
-    return {
-      ok: false,
-      error: "A previous send operation has an unknown outcome. Reconcile before retrying.",
-      code: "PENDING_UNKNOWN_OPERATION",
-    };
-  }
-
-  // ── 5. Create the operation record (generates idempotency key) ─────────────
-  const idempotencyKey = `send-${invoice.id}-${approvalId}-${Date.now()}`;
-
+  // 10. Persist operation intent before calling PayPal (with idempotency key)
+  const idempotencyKey = `send-${invoice.id}-${approval.id}`;
   const operation = await db.externalOperation.create({
     data: {
       workspaceId,
       invoiceId: invoice.id,
-      approvalId,
+      approvalId: approval.id,
       operationType: OperationType.SEND_INVOICE,
+      provider: "paypal",
       idempotencyKey,
       attemptState: OperationAttemptState.IN_FLIGHT,
       attemptedAt: new Date(),
+      providerInvoiceId: invoice.paypalInvoiceId,
     },
   });
 
-  // ── 6. Step A: Create draft in PayPal if no provider ID yet ───────────────
-  let paypalInvoiceId = invoice.paypalInvoiceId;
+  // 11. Execute the PayPal invoice send call via the adapter
+  const sendResult = await sendPayPalInvoice(invoice.paypalInvoiceId, idempotencyKey);
 
-  if (!paypalInvoiceId) {
-    const draftPayload = buildPayPalInvoicePayload(invoice);
-    const draftResult = await createPayPalDraftInvoice(draftPayload);
-
-    if (!draftResult.success) {
-      const isUnknown = "isOutcomeUnknown" in draftResult && draftResult.isOutcomeUnknown;
-
-      await updateOperationAndAudit(
-        operation.id,
-        workspaceId,
-        invoice.id,
-        approvalId,
-        actorId,
-        isUnknown ? OperationAttemptState.UNKNOWN : OperationAttemptState.FAILED,
-        isUnknown,
-        draftResult.error.code,
-        draftResult.error.message
-      );
-
-      return {
-        ok: false,
-        error: draftResult.error.message,
-        code: draftResult.error.code,
-      };
-    }
-
-    paypalInvoiceId = draftResult.data.id;
-
-    // Persist provider invoice ID
-    await db.invoice.update({
-      where: { id: invoice.id },
-      data: {
-        paypalInvoiceId,
-        paypalStatus: draftResult.data.status,
-      },
-    });
-  }
-
-  // ── 7. Step B: Send the invoice ───────────────────────────────────────────
-  const sendResult = await sendPayPalInvoice(paypalInvoiceId);
-
+  // 12. Handle provider failure or timeout
   if (!sendResult.success) {
     const isUnknown = "isOutcomeUnknown" in sendResult && sendResult.isOutcomeUnknown;
-
     await updateOperationAndAudit(
       operation.id,
       workspaceId,
       invoice.id,
-      approvalId,
+      approval.id,
       actorId,
       isUnknown ? OperationAttemptState.UNKNOWN : OperationAttemptState.FAILED,
       isUnknown,
       sendResult.error.code,
-      sendResult.error.message
+      sendResult.error.message,
+      sendResult.correlationId
     );
 
     return {
       ok: false,
       error: sendResult.error.message,
-      code: sendResult.error.code,
+      code: isUnknown ? "OPERATION_UNKNOWN_OUTCOME" : sendResult.error.code,
     };
   }
 
-  // ── 8. Successful send — transition to AWAITING_PAYMENT ───────────────────
-  // NOTE: This is NOT Paid. A send is NOT a payment.
-  const dueDateMapped = mapPayPalStatusToCashPilot("SENT", invoice.dueDate);
+  // 13. Provider send succeeded: persist state inside transaction with safety guarantees
+  const now = new Date();
+  const dueDateMapped = mapPayPalStatusToCashPilot("SENT", invoice.dueDate, now);
 
-  await db.$transaction(async (tx) => {
-    // Mark operation success
-    await tx.externalOperation.update({
-      where: { id: operation.id },
-      data: {
-        attemptState: OperationAttemptState.SUCCESS,
-        completedAt: new Date(),
-        providerInvoiceId: paypalInvoiceId,
-        isOutcomeUnknown: false,
-      },
-    });
-
-    // Update invoice status — NEVER set to PAID here
-    await tx.invoice.update({
-      where: { id: invoice.id },
-      data: {
-        cashpilotStatus: dueDateMapped.cashpilotStatus,
-        paypalStatus: "SENT",
-        lastSyncAt: new Date(),
-        syncIsStale: false,
-      },
-    });
-
-    // Mark approval as used
-    await tx.approval.update({
-      where: { id: approvalId },
-      data: { status: ApprovalStatus.USED },
-    });
-
-    // Record audit
-    await tx.activityEvent.create({
-      data: {
-        workspaceId,
-        invoiceId: invoice.id,
-        approvalId,
-        operationId: operation.id,
-        eventType: ActivityEventType.OPERATION_SUCCEEDED,
-        actorType: ActorType.USER,
-        actorId,
-        description: `Invoice sent via PayPal Sandbox. Provider ID: ${paypalInvoiceId}. Status: SENT (not paid).`,
-        metadata: {
-          paypalInvoiceId,
-          newStatus: dueDateMapped.cashpilotStatus,
+  try {
+    await db.$transaction(async (tx) => {
+      // Mark operation as SUCCESS
+      await tx.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          attemptState: OperationAttemptState.SUCCESS,
+          completedAt: now,
           correlationId: sendResult.correlationId,
+          isOutcomeUnknown: false,
+          providerResponse: { sent: true, status: "SENT" },
         },
-      },
-    });
+      });
 
-    await tx.activityEvent.create({
-      data: {
-        workspaceId,
-        invoiceId: invoice.id,
-        eventType: ActivityEventType.INVOICE_STATUS_CHANGED,
-        actorType: ActorType.SYSTEM,
-        actorId: "system",
-        description: `Invoice status changed from DRAFT to ${dueDateMapped.cashpilotStatus}`,
-        metadata: { from: "DRAFT", to: dueDateMapped.cashpilotStatus },
-      },
+      // Update invoice status — NEVER transition to PAID on send
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          cashpilotStatus: dueDateMapped.cashpilotStatus,
+          paypalStatus: "SENT",
+          paypalStatusRaw: { status: "SENT", sentAt: now.toISOString() },
+          lastSyncAt: now,
+          syncIsStale: false,
+        },
+      });
+
+      // Consume approval (mark USED)
+      await tx.approval.update({
+        where: { id: approval.id },
+        data: {
+          status: ApprovalStatus.USED,
+        },
+      });
+
+      // Record audit event: OPERATION_SUCCEEDED
+      await tx.activityEvent.create({
+        data: {
+          workspaceId,
+          invoiceId: invoice.id,
+          approvalId: approval.id,
+          operationId: operation.id,
+          eventType: ActivityEventType.OPERATION_SUCCEEDED,
+          actorType: ActorType.USER,
+          actorId,
+          description: `Invoice sent via PayPal Sandbox. Provider ID: ${invoice.paypalInvoiceId}. Provider status: SENT (not paid).`,
+          metadata: {
+            paypalInvoiceId: invoice.paypalInvoiceId,
+            previousCashpilotStatus: invoice.cashpilotStatus,
+            newCashpilotStatus: dueDateMapped.cashpilotStatus,
+            correlationId: sendResult.correlationId,
+          },
+        },
+      });
+
+      // Record audit event: INVOICE_STATUS_CHANGED
+      await tx.activityEvent.create({
+        data: {
+          workspaceId,
+          invoiceId: invoice.id,
+          eventType: ActivityEventType.INVOICE_STATUS_CHANGED,
+          actorType: ActorType.SYSTEM,
+          actorId: "system",
+          description: `Invoice status changed from DRAFT to ${dueDateMapped.cashpilotStatus}`,
+          metadata: { from: "DRAFT", to: dueDateMapped.cashpilotStatus },
+        },
+      });
     });
+  } catch {
+    // If local DB fails after provider confirmed send, flag as unknown outcome for reconciliation
+    try {
+      await db.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          isOutcomeUnknown: true,
+          reconcileResult: "PayPal send succeeded but local database update failed",
+          errorCode: "DATABASE_PERSISTENCE_FAILED",
+        },
+      });
+    } catch {
+      // Suppress secondary error
+    }
+
+    return {
+      ok: false,
+      error: "PayPal invoice was sent on PayPal, but local database persistence failed. Reconciliation required.",
+      code: "DATABASE_PERSISTENCE_FAILED",
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      operationId: operation.id,
+      invoiceId: invoice.id,
+      paypalInvoiceId: invoice.paypalInvoiceId,
+      paypalStatus: "SENT",
+      cashpilotStatus: dueDateMapped.cashpilotStatus,
+      isAlreadySent: false,
+      sentAt: now,
+      correlationId: sendResult.correlationId,
+    },
+  };
+}
+
+/**
+ * Backward-compatible wrapper for executing an approved invoice send.
+ */
+export async function executeApprovedSend(
+  workspaceId: string,
+  actorId: string,
+  approvalId: string
+): Promise<ServiceResult<{ operationId: string; paypalInvoiceId?: string }>> {
+  const approval = await db.approval.findFirst({
+    where: { id: approvalId, workspaceId },
   });
 
-  return { ok: true, data: { operationId: operation.id, paypalInvoiceId } };
+  if (!approval || !approval.invoiceId) {
+    return { ok: false, error: "Approval not found", code: "NOT_FOUND" };
+  }
+
+  const res = await sendInvoice(workspaceId, actorId, approval.invoiceId, approvalId);
+  if (!res.ok) {
+    return { ok: false, error: res.error, code: res.code };
+  }
+
+  return {
+    ok: true,
+    data: {
+      operationId: res.data.operationId,
+      paypalInvoiceId: res.data.paypalInvoiceId,
+    },
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
