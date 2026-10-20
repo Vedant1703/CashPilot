@@ -412,13 +412,22 @@ export async function getPayPalInvoiceStatus(
   return { success: true, data, correlationId };
 }
 
+export interface PayPalReminderOptions {
+  subject?: string;
+  note?: string;
+  sendToInvoicer?: boolean;
+  sendToRecipient?: boolean;
+  requestId?: string;
+}
+
 /**
  * Send a payment reminder for an invoice.
  * SRS §4: Only where provider/account/invoice state supports it.
  */
 export async function sendPayPalReminder(
   paypalInvoiceId: string,
-  note?: string
+  noteOrOptions?: string | PayPalReminderOptions,
+  requestIdParam?: string
 ): Promise<PayPalApiResult<{ reminded: true }>> {
   const env = getServerEnv();
   const token = await getPayPalAccessToken();
@@ -435,13 +444,37 @@ export async function sendPayPalReminder(
 
   const url = `${env.PAYPAL_BASE_URL}/v2/invoicing/invoices/${paypalInvoiceId}/remind`;
 
+  const isString = typeof noteOrOptions === "string";
+  const note = isString ? noteOrOptions : noteOrOptions?.note;
+  const subject = isString ? undefined : noteOrOptions?.subject;
+  const sendToRecipient = isString ? true : (noteOrOptions?.sendToRecipient ?? true);
+  const sendToInvoicer = isString ? false : (noteOrOptions?.sendToInvoicer ?? false);
+  const requestId = isString ? requestIdParam : (noteOrOptions?.requestId ?? requestIdParam);
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+
+  if (requestId) {
+    headers["PayPal-Request-Id"] = requestId;
+  }
+
+  const payload: Record<string, unknown> = {
+    send_to_recipient: sendToRecipient,
+    send_to_invoicer: sendToInvoicer,
+  };
+  if (note) {
+    payload.note = note;
+  }
+  if (subject) {
+    payload.subject = subject;
+  }
+
   const fetchResult = await fetchWithTimeout(url, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ note: note ?? "Friendly reminder about your outstanding invoice." }),
+    headers,
+    body: JSON.stringify(payload),
   });
 
   if (fetchResult.timedOut) {

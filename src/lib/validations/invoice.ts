@@ -206,6 +206,8 @@ export const approveInvoiceRequestSchema = z.object({
     .string({ required_error: "Reviewed payload hash is required" })
     .length(64, "Reviewed payload hash must be a 64-character SHA-256 hex string")
     .regex(/^[a-f0-9]{64}$/, "Reviewed payload hash must be a valid 64-character hex string"),
+  note: z.string().max(2000, "Note cannot exceed 2000 characters").optional(),
+  subject: z.string().max(500, "Subject cannot exceed 500 characters").optional(),
 });
 
 export type ApproveInvoiceRequest = z.infer<typeof approveInvoiceRequestSchema>;
@@ -227,4 +229,16 @@ export const sendInvoiceRequestSchema = z
   .default({});
 
 export type SendInvoiceRequest = z.infer<typeof sendInvoiceRequestSchema>;
+
+export const sendReminderRequestSchema = z
+  .object({
+    approvalId: z.string().min(1, "Approval ID must not be empty").optional(),
+    note: z.string().max(2000, "Reminder note cannot exceed 2000 characters").optional(),
+    subject: z.string().max(500, "Reminder subject cannot exceed 500 characters").optional(),
+  })
+  .optional()
+  .default({});
+
+export type SendReminderRequest = z.infer<typeof sendReminderRequestSchema>;
+
 

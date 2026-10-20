@@ -76,12 +76,18 @@ export async function POST(
     }
 
     // 4. Execute approval verification and persistence
+    const reminderMeta =
+      parsed.data.note !== undefined || parsed.data.subject !== undefined
+        ? { note: parsed.data.note, subject: parsed.data.subject }
+        : undefined;
+
     const result = await approveInvoice(
       auth.context.workspaceId,
       auth.context.actorId,
       invoiceId,
       parsed.data.actionType,
-      parsed.data.reviewedPayloadHash
+      parsed.data.reviewedPayloadHash,
+      reminderMeta
     );
 
     if (!result.ok) {

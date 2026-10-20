@@ -26,11 +26,13 @@ import {
   createPayPalDraftInvoice,
   sendPayPalInvoice,
   getPayPalInvoiceStatus,
+  sendPayPalReminder,
   type PayPalInvoicePayload,
 } from "@/lib/paypal/adapter";
 import {
   mapPayPalStatusToCashPilot,
   canSendToPayPal,
+  canSendReminder,
 } from "@/lib/paypal/status-mapper";
 import {
   CashPilotStatus,
@@ -92,8 +94,10 @@ export function computeMaterialPayloadHash(invoice: {
     quantity: number;
     unitPriceMinorUnits: number;
   }>;
+  note?: string;
+  subject?: string;
 }): string {
-  const canonical = {
+  const canonical: Record<string, unknown> = {
     actionType: invoice.actionType ?? "SEND_INVOICE",
     currency: invoice.currency,
     dueDate:
@@ -110,6 +114,12 @@ export function computeMaterialPayloadHash(invoice: {
     totalMinorUnits: invoice.totalMinorUnits,
     workspaceId: invoice.workspaceId,
   };
+  if (invoice.note !== undefined && invoice.note !== null && invoice.note !== "") {
+    canonical.note = invoice.note;
+  }
+  if (invoice.subject !== undefined && invoice.subject !== null && invoice.subject !== "") {
+    canonical.subject = invoice.subject;
+  }
   return createHash("sha256").update(canonicalStringify(canonical)).digest("hex");
 }
 
@@ -548,7 +558,8 @@ export async function approveInvoice(
   actorId: string,
   invoiceId: string,
   actionType: ApprovalAction,
-  reviewedPayloadHash: string
+  reviewedPayloadHash: string,
+  reminderMeta?: { note?: string; subject?: string }
 ): Promise<ServiceResult<ApproveInvoiceResult>> {
   // 1. Fetch current invoice with client and line items
   const invoice = await getInvoiceById(invoiceId, workspaceId);
@@ -568,10 +579,23 @@ export async function approveInvoice(
     };
   }
 
+  if (
+    actionType === ApprovalAction.SEND_REMINDER &&
+    !canSendReminder(invoice.cashpilotStatus)
+  ) {
+    return {
+      ok: false,
+      error: `Only AWAITING_PAYMENT, DUE_SOON, or OVERDUE invoices can receive reminders (current status: ${invoice.cashpilotStatus})`,
+      code: "INVALID_INVOICE_STATUS",
+    };
+  }
+
   // 3. Compute authoritative current material payload hash on server
   const currentPayloadHash = computeMaterialPayloadHash({
     ...invoice,
     actionType,
+    note: reminderMeta?.note,
+    subject: reminderMeta?.subject,
   });
 
   // 4. Stale review check: hash MUST match what the user reviewed
@@ -646,6 +670,8 @@ export async function approveInvoice(
         totalMinorUnits: li.totalMinorUnits,
       })),
       timestamp: now.toISOString(),
+      ...(reminderMeta?.note ? { note: reminderMeta.note } : {}),
+      ...(reminderMeta?.subject ? { subject: reminderMeta.subject } : {}),
     };
 
     const approval = await tx.approval.create({
@@ -1457,6 +1483,492 @@ export async function executeApprovedSend(
     data: {
       operationId: res.data.operationId,
       paypalInvoiceId: res.data.paypalInvoiceId,
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invoice Payment Reminder
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SendReminderResult {
+  operationId: string;
+  invoiceId: string;
+  paypalInvoiceId: string;
+  recipientEmail: string;
+  reminded: boolean;
+  remindedAt: Date;
+  correlationId?: string;
+}
+
+/**
+ * Execute an approved invoice payment reminder against PayPal Sandbox.
+ *
+ * SRS §4 & Financial Integrity Rules:
+ *   - Human approval required: MUST have an active SEND_REMINDER approval
+ *   - Approval bound to exact current material payload hash (recomputed server-side)
+ *   - Stale/modified invoice invalidates approval and rejects reminder (409 Conflict)
+ *   - Pre-condition: PayPal invoice must already be sent and in eligible status (AWAITING_PAYMENT, DUE_SOON, OVERDUE)
+ *   - Ineligible statuses (DRAFT, PAID, CANCELLED) rejected with 400 Bad Request
+ *   - Recipient is strictly provider-linked/persisted client email; no arbitrary overrides
+ *   - Rate-limited: Cooldown window (24h) prevents spamming the recipient
+ *   - Concurrent in-flight operations blocked (409 Conflict)
+ *   - Timeouts / uncertain outcomes recorded as UNKNOWN; blind retries blocked
+ *   - DB persistence failure after provider response marks outcome unknown
+ *   - Reminder is a notification ONLY: NEVER alters invoice state to PAID or changes workflow status
+ *   - Append-only audit trail recorded
+ */
+export async function sendInvoiceReminder(
+  workspaceId: string,
+  actorId: string,
+  invoiceId: string,
+  explicitApprovalId?: string,
+  options?: { note?: string; subject?: string }
+): Promise<ServiceResult<SendReminderResult>> {
+  // 1. Fetch current invoice with client and line items
+  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  if (!invoice) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  // 2. State invariant: Invoice must be in an eligible state for reminders
+  if (!canSendReminder(invoice.cashpilotStatus)) {
+    if (invoice.cashpilotStatus === CashPilotStatus.DRAFT) {
+      return {
+        ok: false,
+        error: "Draft invoices cannot receive reminders. The invoice must be sent to PayPal first.",
+        code: "INVALID_INVOICE_STATE",
+      };
+    }
+    if (invoice.cashpilotStatus === CashPilotStatus.PAID) {
+      return {
+        ok: false,
+        error: "Paid invoices cannot receive reminders.",
+        code: "INVALID_INVOICE_STATE",
+      };
+    }
+    if (invoice.cashpilotStatus === CashPilotStatus.CANCELLED) {
+      return {
+        ok: false,
+        error: "Cancelled invoices cannot receive reminders.",
+        code: "INVALID_INVOICE_STATE",
+      };
+    }
+    return {
+      ok: false,
+      error: `Invoices in status ${invoice.cashpilotStatus} cannot receive reminders. Only AWAITING_PAYMENT, DUE_SOON, or OVERDUE invoices are eligible.`,
+      code: "INVALID_INVOICE_STATE",
+    };
+  }
+
+  // 3. Verify that PayPal invoice ID exists
+  if (!invoice.paypalInvoiceId) {
+    return {
+      ok: false,
+      error: "No PayPal invoice ID linked to this invoice. A draft must be created and sent before reminders can be issued.",
+      code: "PAYPAL_DRAFT_REQUIRED",
+    };
+  }
+
+  // 4. Check for prior unknown-outcome operations to prevent blind retry
+  const unknownOp = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.SEND_REMINDER,
+      isOutcomeUnknown: true,
+    },
+  });
+
+  if (unknownOp) {
+    return {
+      ok: false,
+      error: "A previous reminder operation has an unknown outcome (timed out). Please check or reconcile status before retrying.",
+      code: "PENDING_UNKNOWN_OPERATION",
+    };
+  }
+
+  // 5. Check for concurrent in-flight reminder operation
+  const inFlightOp = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.SEND_REMINDER,
+      attemptState: OperationAttemptState.IN_FLIGHT,
+      attemptedAt: { gt: new Date(Date.now() - 30_000) },
+    },
+  });
+
+  if (inFlightOp) {
+    return {
+      ok: false,
+      error: "A reminder operation is currently in flight for this invoice. Please wait.",
+      code: "OPERATION_IN_FLIGHT",
+    };
+  }
+
+  // 6. Rate Limit / Cooldown check (24h cooldown to prevent customer spam)
+  const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  const recentReminder = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.SEND_REMINDER,
+      attemptState: OperationAttemptState.SUCCESS,
+      completedAt: { gt: new Date(Date.now() - REMINDER_COOLDOWN_MS) },
+    },
+    orderBy: { completedAt: "desc" },
+  });
+
+  if (recentReminder) {
+    return {
+      ok: false,
+      error: `A reminder was already sent for this invoice within the last 24 hours (at ${recentReminder.completedAt?.toISOString()}). Reminders are rate-limited to once per 24 hours to prevent spamming the customer.`,
+      code: "REMINDER_RATE_LIMITED",
+    };
+  }
+
+  // 7. Locate and validate the approval
+  let approval;
+  if (explicitApprovalId) {
+    approval = await db.approval.findFirst({
+      where: { id: explicitApprovalId, workspaceId, invoiceId },
+    });
+
+    if (!approval) {
+      return {
+        ok: false,
+        error: "The specified approval does not exist for this invoice and workspace.",
+        code: "APPROVAL_NOT_FOUND",
+      };
+    }
+
+    if (approval.actionType !== ApprovalAction.SEND_REMINDER) {
+      return {
+        ok: false,
+        error: `Approval action is ${approval.actionType}, but SEND_REMINDER is required.`,
+        code: "INVALID_APPROVAL_ACTION",
+      };
+    }
+
+    if (approval.status === ApprovalStatus.INVALIDATED) {
+      return {
+        ok: false,
+        error: "Approval was invalidated because invoice details changed. Please review and approve again.",
+        code: "APPROVAL_INVALIDATED",
+      };
+    }
+
+    if (approval.status === ApprovalStatus.USED) {
+      return {
+        ok: false,
+        error: "Approval has already been consumed by a prior operation.",
+        code: "APPROVAL_USED",
+      };
+    }
+
+    if (
+      approval.status === ApprovalStatus.EXPIRED ||
+      (approval.expiresAt && approval.expiresAt < new Date())
+    ) {
+      return {
+        ok: false,
+        error: "The approval for this invoice has expired. Please review and re-approve.",
+        code: "APPROVAL_EXPIRED",
+      };
+    }
+
+    if (approval.status !== ApprovalStatus.APPROVED) {
+      return {
+        ok: false,
+        error: `Approval is not in APPROVED state (current: ${approval.status}).`,
+        code: "APPROVAL_NOT_APPROVED",
+      };
+    }
+  } else {
+    approval = await db.approval.findFirst({
+      where: {
+        invoiceId,
+        workspaceId,
+        actionType: ApprovalAction.SEND_REMINDER,
+        status: ApprovalStatus.APPROVED,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!approval) {
+      const anyApproval = await db.approval.findFirst({
+        where: { invoiceId, workspaceId, actionType: ApprovalAction.SEND_REMINDER },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (
+        anyApproval?.status === ApprovalStatus.EXPIRED ||
+        (anyApproval?.expiresAt && anyApproval.expiresAt < new Date())
+      ) {
+        return {
+          ok: false,
+          error: "The approval for this invoice has expired. Please review and re-approve.",
+          code: "APPROVAL_EXPIRED",
+        };
+      }
+      if (anyApproval?.status === ApprovalStatus.INVALIDATED) {
+        return {
+          ok: false,
+          error: "Approval was invalidated because invoice details changed. Please review and approve again.",
+          code: "APPROVAL_INVALIDATED",
+        };
+      }
+      if (anyApproval?.status === ApprovalStatus.USED) {
+        return {
+          ok: false,
+          error: "Approval has already been consumed by a prior operation.",
+          code: "APPROVAL_USED",
+        };
+      }
+
+      return {
+        ok: false,
+        error: "An approved SEND_REMINDER action is required before sending a reminder.",
+        code: "APPROVAL_REQUIRED",
+      };
+    }
+
+    if (approval.expiresAt && approval.expiresAt < new Date()) {
+      return {
+        ok: false,
+        error: "The approval for this invoice has expired. Please review and re-approve.",
+        code: "APPROVAL_EXPIRED",
+      };
+    }
+  }
+
+  // 8. Recompute authoritative material hash on server & check for stale approval
+  const approvedSnapshot = (approval.payloadSnapshot as Record<string, unknown>) || {};
+  const approvedNote = typeof approvedSnapshot.note === "string" ? approvedSnapshot.note : undefined;
+  const approvedSubject = typeof approvedSnapshot.subject === "string" ? approvedSnapshot.subject : undefined;
+
+  // Verify requested note/subject matches approved reminder payload
+  if (options?.note !== undefined && options.note !== approvedNote) {
+    return {
+      ok: false,
+      error: "The reminder note does not match the approved reminder payload.",
+      code: "PAYLOAD_MISMATCH",
+    };
+  }
+  if (options?.subject !== undefined && options.subject !== approvedSubject) {
+    return {
+      ok: false,
+      error: "The reminder subject does not match the approved reminder payload.",
+      code: "PAYLOAD_MISMATCH",
+    };
+  }
+
+  const currentHash = computeMaterialPayloadHash({
+    ...invoice,
+    actionType: approval.actionType,
+    note: approvedNote,
+    subject: approvedSubject,
+  });
+
+  if (currentHash !== approval.payloadHash) {
+    await db.approval.update({
+      where: { id: approval.id },
+      data: {
+        status: ApprovalStatus.INVALIDATED,
+        invalidatedAt: new Date(),
+        invalidationReason: "Invoice material fields changed after approval",
+      },
+    });
+
+    await db.activityEvent.create({
+      data: {
+        workspaceId,
+        invoiceId,
+        approvalId: approval.id,
+        eventType: ActivityEventType.APPROVAL_INVALIDATED,
+        actorType: ActorType.SYSTEM,
+        actorId: "system",
+        description: "Approval invalidated: invoice content changed after approval",
+        metadata: { expectedHash: approval.payloadHash, actualHash: currentHash },
+      },
+    });
+
+    return {
+      ok: false,
+      error: "Invoice was modified after approval. Approval invalidated. Please review and re-approve.",
+      code: "APPROVAL_STALE",
+    };
+  }
+
+  // 9. Verify that recipient and amount match the approved payload snapshot
+  if (approvedSnapshot.recipientEmail && approvedSnapshot.recipientEmail !== invoice.client.email) {
+    return {
+      ok: false,
+      error: "Recipient email does not match approved payload snapshot.",
+      code: "PAYLOAD_SNAPSHOT_MISMATCH",
+    };
+  }
+  if (approvedSnapshot.totalMinorUnits !== undefined && approvedSnapshot.totalMinorUnits !== invoice.totalMinorUnits) {
+    return {
+      ok: false,
+      error: "Invoice total does not match approved payload snapshot.",
+      code: "PAYLOAD_SNAPSHOT_MISMATCH",
+    };
+  }
+  if (approvedSnapshot.currency && approvedSnapshot.currency !== invoice.currency) {
+    return {
+      ok: false,
+      error: "Invoice currency does not match approved payload snapshot.",
+      code: "PAYLOAD_SNAPSHOT_MISMATCH",
+    };
+  }
+
+  // 10. Persist operation intent before calling PayPal (with idempotency key)
+  const idempotencyKey = `remind-${invoice.id}-${approval.id}`;
+  const operation = await db.externalOperation.create({
+    data: {
+      workspaceId,
+      invoiceId: invoice.id,
+      approvalId: approval.id,
+      operationType: OperationType.SEND_REMINDER,
+      provider: "paypal",
+      idempotencyKey,
+      attemptState: OperationAttemptState.IN_FLIGHT,
+      attemptedAt: new Date(),
+      providerInvoiceId: invoice.paypalInvoiceId,
+    },
+  });
+
+  // 11. Execute the PayPal invoice reminder call via the adapter
+  const reminderResult = await sendPayPalReminder(
+    invoice.paypalInvoiceId,
+    {
+      note: approvedNote,
+      subject: approvedSubject,
+      requestId: idempotencyKey,
+    }
+  );
+
+  // 12. Handle provider failure or timeout
+  if (!reminderResult.success) {
+    const isUnknown = "isOutcomeUnknown" in reminderResult && reminderResult.isOutcomeUnknown;
+    await updateOperationAndAudit(
+      operation.id,
+      workspaceId,
+      invoice.id,
+      approval.id,
+      actorId,
+      isUnknown ? OperationAttemptState.UNKNOWN : OperationAttemptState.FAILED,
+      isUnknown,
+      reminderResult.error.code,
+      reminderResult.error.message,
+      reminderResult.correlationId
+    );
+
+    const isRateLimit =
+      reminderResult.error.httpStatus === 429 ||
+      reminderResult.error.code?.includes("RATE") ||
+      reminderResult.error.code?.includes("LIMIT");
+
+    return {
+      ok: false,
+      error: reminderResult.error.message,
+      code: isUnknown
+        ? "OPERATION_UNKNOWN_OUTCOME"
+        : isRateLimit
+        ? "REMINDER_RATE_LIMITED"
+        : reminderResult.error.code,
+    };
+  }
+
+  // 13. Provider reminder succeeded: record success and consume approval
+  const now = new Date();
+
+  try {
+    await db.$transaction(async (tx) => {
+      // Mark operation as SUCCESS
+      await tx.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          attemptState: OperationAttemptState.SUCCESS,
+          completedAt: now,
+          correlationId: reminderResult.correlationId,
+          isOutcomeUnknown: false,
+          providerResponse: { reminded: true },
+        },
+      });
+
+      // Consume approval (mark USED)
+      await tx.approval.update({
+        where: { id: approval.id },
+        data: {
+          status: ApprovalStatus.USED,
+        },
+      });
+
+      // Update invoice lastSyncAt (Preserve existing workflow status and paypalStatus!)
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          lastSyncAt: now,
+          syncIsStale: false,
+        },
+      });
+
+      // Record audit event: OPERATION_SUCCEEDED
+      await tx.activityEvent.create({
+        data: {
+          workspaceId,
+          invoiceId: invoice.id,
+          approvalId: approval.id,
+          operationId: operation.id,
+          eventType: ActivityEventType.OPERATION_SUCCEEDED,
+          actorType: ActorType.USER,
+          actorId,
+          description: `Payment reminder sent to ${invoice.client.email} via PayPal Sandbox. Provider ID: ${invoice.paypalInvoiceId}.`,
+          metadata: {
+            paypalInvoiceId: invoice.paypalInvoiceId,
+            recipientEmail: invoice.client.email,
+            note: approvedNote,
+            subject: approvedSubject,
+            correlationId: reminderResult.correlationId,
+          },
+        },
+      });
+    });
+  } catch {
+    // Local DB update failed after provider accepted reminder: mark outcome unknown
+    try {
+      await db.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          isOutcomeUnknown: true,
+          reconcileResult: "PayPal reminder sent but local database update failed",
+          errorCode: "DATABASE_PERSISTENCE_FAILED",
+        },
+      });
+    } catch {
+      // Suppress secondary error
+    }
+
+    return {
+      ok: false,
+      error: "PayPal reminder was sent on PayPal, but local database persistence failed. Reconciliation required.",
+      code: "DATABASE_PERSISTENCE_FAILED",
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      operationId: operation.id,
+      invoiceId: invoice.id,
+      paypalInvoiceId: invoice.paypalInvoiceId,
+      recipientEmail: invoice.client.email,
+      reminded: true,
+      remindedAt: now,
+      correlationId: reminderResult.correlationId,
     },
   };
 }
