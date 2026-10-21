@@ -241,4 +241,18 @@ export const sendReminderRequestSchema = z
 
 export type SendReminderRequest = z.infer<typeof sendReminderRequestSchema>;
 
+export const cancelInvoiceRequestSchema = z
+  .object({
+    approvalId: z.string().min(1, "Approval ID must not be empty").optional(),
+    note: z.string().max(2000, "Cancellation note cannot exceed 2000 characters").optional(),
+    subject: z.string().max(500, "Cancellation subject cannot exceed 500 characters").optional(),
+    sendToRecipient: z.boolean().optional(),
+    sendToInvoicer: z.boolean().optional(),
+  })
+  .optional()
+  .default({});
+
+export type CancelInvoiceRequest = z.infer<typeof cancelInvoiceRequestSchema>;
+
+
 

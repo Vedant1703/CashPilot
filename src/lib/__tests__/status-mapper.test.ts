@@ -16,6 +16,7 @@ import {
   mapPayPalStatusToCashPilot,
   canSendToPayPal,
   canSendReminder,
+  canCancelInvoice,
 } from "@/lib/paypal/status-mapper";
 import { CashPilotStatus } from "@prisma/client";
 
@@ -148,3 +149,30 @@ describe("canSendReminder", () => {
     expect(canSendReminder(CashPilotStatus.CANCELLED)).toBe(false);
   });
 });
+
+describe("canCancelInvoice", () => {
+  it("allows cancellation for sent unpaid invoices with active PayPal status", () => {
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "SENT")).toBe(true);
+    expect(canCancelInvoice(CashPilotStatus.DUE_SOON, "SENT")).toBe(true);
+    expect(canCancelInvoice(CashPilotStatus.OVERDUE, "SENT")).toBe(true);
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "UNPAID")).toBe(true);
+  });
+
+  it("disallows cancellation for DRAFT, PAID, CANCELLED, and NEEDS_REVIEW", () => {
+    expect(canCancelInvoice(CashPilotStatus.DRAFT, "SENT")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.PAID, "PAID")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.CANCELLED, "CANCELLED")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.NEEDS_REVIEW, "SENT")).toBe(false);
+  });
+
+  it("disallows cancellation when paypalStatus indicates paid, draft, or already cancelled", () => {
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "PAID")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "MARKED_AS_PAID")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "PARTIALLY_PAID")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "CANCELLED")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "VOIDED")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, "DRAFT")).toBe(false);
+    expect(canCancelInvoice(CashPilotStatus.AWAITING_PAYMENT, null)).toBe(false);
+  });
+});
+

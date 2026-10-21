@@ -27,12 +27,14 @@ import {
   sendPayPalInvoice,
   getPayPalInvoiceStatus,
   sendPayPalReminder,
+  cancelPayPalInvoice,
   type PayPalInvoicePayload,
 } from "@/lib/paypal/adapter";
 import {
   mapPayPalStatusToCashPilot,
   canSendToPayPal,
   canSendReminder,
+  canCancelInvoice,
 } from "@/lib/paypal/status-mapper";
 import {
   CashPilotStatus,
@@ -588,6 +590,66 @@ export async function approveInvoice(
       error: `Only AWAITING_PAYMENT, DUE_SOON, or OVERDUE invoices can receive reminders (current status: ${invoice.cashpilotStatus})`,
       code: "INVALID_INVOICE_STATUS",
     };
+  }
+
+  if (actionType === ApprovalAction.CANCEL_INVOICE) {
+    if (!invoice.paypalInvoiceId) {
+      return {
+        ok: false,
+        error: "Draft invoices that have not been sent to PayPal cannot be cancelled via this endpoint.",
+        code: "PAYPAL_INVOICE_REQUIRED",
+      };
+    }
+    if (invoice.cashpilotStatus === CashPilotStatus.DRAFT || invoice.paypalStatus === "DRAFT") {
+      return {
+        ok: false,
+        error: "Draft invoices cannot be cancelled via the sent invoice cancellation endpoint.",
+        code: "INVALID_INVOICE_STATUS",
+      };
+    }
+    if (
+      invoice.cashpilotStatus === CashPilotStatus.PAID ||
+      invoice.paypalStatus === "PAID" ||
+      invoice.paypalStatus === "MARKED_AS_PAID"
+    ) {
+      return {
+        ok: false,
+        error: "Paid invoices cannot be cancelled.",
+        code: "INVALID_INVOICE_STATUS",
+      };
+    }
+    if (invoice.paypalStatus === "PARTIALLY_PAID") {
+      return {
+        ok: false,
+        error: "Partially paid invoices cannot be cancelled through this workflow.",
+        code: "INVALID_INVOICE_STATUS",
+      };
+    }
+    if (
+      invoice.cashpilotStatus === CashPilotStatus.CANCELLED ||
+      invoice.paypalStatus === "CANCELLED" ||
+      invoice.paypalStatus === "VOIDED"
+    ) {
+      return {
+        ok: false,
+        error: "Invoice is already cancelled.",
+        code: "INVALID_INVOICE_STATUS",
+      };
+    }
+    if (invoice.cashpilotStatus === CashPilotStatus.NEEDS_REVIEW || invoice.syncIsStale) {
+      return {
+        ok: false,
+        error: "Invoice provider state is ambiguous or stale. Reconcile provider status before cancelling.",
+        code: "PROVIDER_STATE_AMBIGUOUS",
+      };
+    }
+    if (!canCancelInvoice(invoice.cashpilotStatus, invoice.paypalStatus)) {
+      return {
+        ok: false,
+        error: `Invoices in status ${invoice.cashpilotStatus} (provider status: ${invoice.paypalStatus}) cannot be approved for cancellation.`,
+        code: "INVALID_INVOICE_STATUS",
+      };
+    }
   }
 
   // 3. Compute authoritative current material payload hash on server
@@ -1974,6 +2036,500 @@ export async function sendInvoiceReminder(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Invoice Cancellation
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface CancelInvoiceResult {
+  operationId: string;
+  invoiceId: string;
+  paypalInvoiceId: string;
+  previousStatus: CashPilotStatus;
+  currentStatus: CashPilotStatus;
+  previousPaypalStatus: string | null;
+  currentPaypalStatus: string;
+  cancelledAt: Date;
+  correlationId?: string;
+}
+
+/**
+ * Execute an approved invoice cancellation against PayPal Sandbox.
+ *
+ * SRS §4 & Financial Integrity Rules:
+ *   - Human approval required: MUST have an active, unexpired CANCEL_INVOICE approval
+ *   - Approval bound to exact current material payload hash (recomputed server-side)
+ *   - Stale/modified invoice invalidates approval and rejects cancellation (409 Conflict)
+ *   - Pre-condition: PayPal invoice must already be sent and in cancellable status (AWAITING_PAYMENT, DUE_SOON, OVERDUE)
+ *   - Ineligible statuses (DRAFT, PAID, PARTIALLY_PAID, CANCELLED, NEEDS_REVIEW) rejected with 400 Bad Request
+ *   - Missing PayPal invoice ID rejected (400 Bad Request)
+ *   - Stale/ambiguous provider state blocks cancellation until reconciled (409 Conflict)
+ *   - Concurrent in-flight operations blocked (409 Conflict)
+ *   - Timeouts / uncertain outcomes recorded as UNKNOWN; blind retries blocked (504 Gateway Timeout)
+ *   - Upon provider success (204 No Content), invoice status transitions to CANCELLED atomically
+ */
+export async function cancelInvoice(
+  workspaceId: string,
+  actorId: string,
+  invoiceId: string,
+  explicitApprovalId?: string,
+  options?: { note?: string; subject?: string; sendToRecipient?: boolean; sendToInvoicer?: boolean }
+): Promise<ServiceResult<CancelInvoiceResult>> {
+  // 1. Fetch current invoice with client and line items
+  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  if (!invoice) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  // 2. State invariant: Draft invoices cannot be cancelled via the sent invoice cancellation endpoint
+  if (invoice.cashpilotStatus === CashPilotStatus.DRAFT || invoice.paypalStatus === "DRAFT") {
+    return {
+      ok: false,
+      error: "Draft invoices cannot be cancelled via the sent invoice cancellation endpoint.",
+      code: "INVALID_INVOICE_STATE",
+    };
+  }
+
+  // 3. Pre-condition: PayPal invoice ID must exist
+  if (!invoice.paypalInvoiceId) {
+    return {
+      ok: false,
+      error: "No PayPal invoice ID linked to this invoice. A draft must be created and sent before it can be cancelled via PayPal.",
+      code: "PAYPAL_INVOICE_REQUIRED",
+    };
+  }
+
+  if (
+    invoice.cashpilotStatus === CashPilotStatus.PAID ||
+    invoice.paypalStatus === "PAID" ||
+    invoice.paypalStatus === "MARKED_AS_PAID"
+  ) {
+    return {
+      ok: false,
+      error: "Paid invoices cannot be cancelled.",
+      code: "INVALID_INVOICE_STATE",
+    };
+  }
+
+  if (invoice.paypalStatus === "PARTIALLY_PAID") {
+    return {
+      ok: false,
+      error: "Partially paid invoices cannot be cancelled through this workflow.",
+      code: "INVALID_INVOICE_STATE",
+    };
+  }
+
+  if (
+    invoice.cashpilotStatus === CashPilotStatus.CANCELLED ||
+    invoice.paypalStatus === "CANCELLED" ||
+    invoice.paypalStatus === "VOIDED"
+  ) {
+    return {
+      ok: false,
+      error: "This invoice is already cancelled.",
+      code: "INVALID_INVOICE_STATE",
+    };
+  }
+
+  if (invoice.cashpilotStatus === CashPilotStatus.NEEDS_REVIEW || invoice.syncIsStale) {
+    return {
+      ok: false,
+      error: "Invoice provider state is ambiguous or stale. Reconcile provider status before cancelling.",
+      code: "PROVIDER_STATE_AMBIGUOUS",
+    };
+  }
+
+  if (!canCancelInvoice(invoice.cashpilotStatus, invoice.paypalStatus)) {
+    return {
+      ok: false,
+      error: `Invoices in status ${invoice.cashpilotStatus} (provider status: ${invoice.paypalStatus}) cannot be cancelled.`,
+      code: "INVALID_INVOICE_STATE",
+    };
+  }
+
+  // 4. Check for prior unknown-outcome operations to prevent blind retry
+  const unknownOp = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.CANCEL_INVOICE,
+      isOutcomeUnknown: true,
+    },
+  });
+
+  if (unknownOp) {
+    return {
+      ok: false,
+      error: "A previous cancellation operation has an unknown outcome (timed out). Please check or reconcile status before retrying.",
+      code: "PENDING_UNKNOWN_OPERATION",
+    };
+  }
+
+  // 5. Check for concurrent in-flight cancellation operation
+  const inFlightOp = await db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.CANCEL_INVOICE,
+      attemptState: OperationAttemptState.IN_FLIGHT,
+      attemptedAt: { gt: new Date(Date.now() - 30_000) },
+    },
+  });
+
+  if (inFlightOp) {
+    return {
+      ok: false,
+      error: "A cancellation operation is currently in flight for this invoice. Please wait.",
+      code: "OPERATION_IN_FLIGHT",
+    };
+  }
+
+  // 6. Locate and validate the approval
+  let approval;
+  if (explicitApprovalId) {
+    approval = await db.approval.findFirst({
+      where: { id: explicitApprovalId, workspaceId, invoiceId },
+    });
+
+    if (!approval) {
+      return {
+        ok: false,
+        error: "The specified approval does not exist for this invoice and workspace.",
+        code: "APPROVAL_NOT_FOUND",
+      };
+    }
+
+    if (approval.actionType !== ApprovalAction.CANCEL_INVOICE) {
+      return {
+        ok: false,
+        error: `Approval action is ${approval.actionType}, but CANCEL_INVOICE is required.`,
+        code: "INVALID_APPROVAL_ACTION",
+      };
+    }
+
+    if (approval.status === ApprovalStatus.INVALIDATED) {
+      return {
+        ok: false,
+        error: "Approval was invalidated because invoice details changed. Please review and approve again.",
+        code: "APPROVAL_INVALIDATED",
+      };
+    }
+
+    if (approval.status === ApprovalStatus.USED) {
+      return {
+        ok: false,
+        error: "Approval has already been consumed by a prior operation.",
+        code: "APPROVAL_USED",
+      };
+    }
+
+    if (
+      approval.status === ApprovalStatus.EXPIRED ||
+      (approval.expiresAt && approval.expiresAt < new Date())
+    ) {
+      return {
+        ok: false,
+        error: "The approval for this invoice has expired. Please review and re-approve.",
+        code: "APPROVAL_EXPIRED",
+      };
+    }
+
+    if (approval.status !== ApprovalStatus.APPROVED) {
+      return {
+        ok: false,
+        error: `Approval is not in APPROVED state (current: ${approval.status}).`,
+        code: "APPROVAL_NOT_APPROVED",
+      };
+    }
+  } else {
+    approval = await db.approval.findFirst({
+      where: {
+        invoiceId,
+        workspaceId,
+        actionType: ApprovalAction.CANCEL_INVOICE,
+        status: ApprovalStatus.APPROVED,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!approval) {
+      const anyApproval = await db.approval.findFirst({
+        where: { invoiceId, workspaceId, actionType: ApprovalAction.CANCEL_INVOICE },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (
+        anyApproval?.status === ApprovalStatus.EXPIRED ||
+        (anyApproval?.expiresAt && anyApproval.expiresAt < new Date())
+      ) {
+        return {
+          ok: false,
+          error: "The approval for this invoice has expired. Please review and re-approve.",
+          code: "APPROVAL_EXPIRED",
+        };
+      }
+      if (anyApproval?.status === ApprovalStatus.INVALIDATED) {
+        return {
+          ok: false,
+          error: "Approval was invalidated because invoice details changed. Please review and approve again.",
+          code: "APPROVAL_INVALIDATED",
+        };
+      }
+      if (anyApproval?.status === ApprovalStatus.USED) {
+        return {
+          ok: false,
+          error: "Approval has already been consumed by a prior operation.",
+          code: "APPROVAL_USED",
+        };
+      }
+
+      return {
+        ok: false,
+        error: "An approved CANCEL_INVOICE action is required before cancelling the invoice.",
+        code: "APPROVAL_REQUIRED",
+      };
+    }
+
+    if (approval.expiresAt && approval.expiresAt < new Date()) {
+      return {
+        ok: false,
+        error: "The approval for this invoice has expired. Please review and re-approve.",
+        code: "APPROVAL_EXPIRED",
+      };
+    }
+  }
+
+  // 7. Recompute authoritative material hash on server & check for stale approval
+  const approvedSnapshot = (approval.payloadSnapshot as Record<string, unknown>) || {};
+  const approvedNote = typeof approvedSnapshot.note === "string" ? approvedSnapshot.note : undefined;
+  const approvedSubject = typeof approvedSnapshot.subject === "string" ? approvedSnapshot.subject : undefined;
+
+  // Verify requested note/subject matches approved cancellation payload
+  if (options?.note !== undefined && options.note !== approvedNote) {
+    return {
+      ok: false,
+      error: "The cancellation note does not match the approved cancellation payload.",
+      code: "PAYLOAD_MISMATCH",
+    };
+  }
+  if (options?.subject !== undefined && options.subject !== approvedSubject) {
+    return {
+      ok: false,
+      error: "The cancellation subject does not match the approved cancellation payload.",
+      code: "PAYLOAD_MISMATCH",
+    };
+  }
+
+  const currentHash = computeMaterialPayloadHash({
+    ...invoice,
+    actionType: approval.actionType,
+    note: approvedNote,
+    subject: approvedSubject,
+  });
+
+  if (currentHash !== approval.payloadHash) {
+    await db.approval.update({
+      where: { id: approval.id },
+      data: {
+        status: ApprovalStatus.INVALIDATED,
+        invalidatedAt: new Date(),
+        invalidationReason: "Invoice material fields changed after approval",
+      },
+    });
+
+    await db.activityEvent.create({
+      data: {
+        workspaceId,
+        invoiceId,
+        approvalId: approval.id,
+        eventType: ActivityEventType.APPROVAL_INVALIDATED,
+        actorType: ActorType.SYSTEM,
+        actorId: "system",
+        description: "Approval invalidated: invoice content changed after approval",
+        metadata: { expectedHash: approval.payloadHash, actualHash: currentHash },
+      },
+    });
+
+    return {
+      ok: false,
+      error: "Invoice was modified after approval. Approval invalidated. Please review and re-approve.",
+      code: "APPROVAL_STALE",
+    };
+  }
+
+  // 8. Verify recipient and amount match approved payload snapshot
+  if (approvedSnapshot.recipientEmail && approvedSnapshot.recipientEmail !== invoice.client.email) {
+    return {
+      ok: false,
+      error: "Recipient email does not match approved payload snapshot.",
+      code: "PAYLOAD_SNAPSHOT_MISMATCH",
+    };
+  }
+  if (approvedSnapshot.totalMinorUnits !== undefined && approvedSnapshot.totalMinorUnits !== invoice.totalMinorUnits) {
+    return {
+      ok: false,
+      error: "Invoice total does not match approved payload snapshot.",
+      code: "PAYLOAD_SNAPSHOT_MISMATCH",
+    };
+  }
+  if (approvedSnapshot.currency && approvedSnapshot.currency !== invoice.currency) {
+    return {
+      ok: false,
+      error: "Invoice currency does not match approved payload snapshot.",
+      code: "PAYLOAD_SNAPSHOT_MISMATCH",
+    };
+  }
+
+  // 9. Persist operation intent before calling PayPal
+  const idempotencyKey = `cancel-${invoice.id}-${approval.id}`;
+  const operation = await db.externalOperation.create({
+    data: {
+      workspaceId,
+      invoiceId: invoice.id,
+      approvalId: approval.id,
+      operationType: OperationType.CANCEL_INVOICE,
+      provider: "paypal",
+      idempotencyKey,
+      attemptState: OperationAttemptState.IN_FLIGHT,
+      attemptedAt: new Date(),
+      providerInvoiceId: invoice.paypalInvoiceId,
+    },
+  });
+
+  // 10. Execute the PayPal invoice cancellation call via the adapter
+  const cancelResult = await cancelPayPalInvoice(
+    invoice.paypalInvoiceId,
+    {
+      note: approvedNote,
+      subject: approvedSubject,
+      sendToRecipient: options?.sendToRecipient ?? true,
+      sendToInvoicer: options?.sendToInvoicer ?? false,
+      requestId: idempotencyKey,
+    }
+  );
+
+  // 11. Handle provider failure or timeout
+  if (!cancelResult.success) {
+    const isUnknown = "isOutcomeUnknown" in cancelResult && cancelResult.isOutcomeUnknown;
+    await updateOperationAndAudit(
+      operation.id,
+      workspaceId,
+      invoice.id,
+      approval.id,
+      actorId,
+      isUnknown ? OperationAttemptState.UNKNOWN : OperationAttemptState.FAILED,
+      isUnknown,
+      cancelResult.error.code,
+      cancelResult.error.message,
+      cancelResult.correlationId
+    );
+
+    return {
+      ok: false,
+      error: cancelResult.error.message,
+      code: isUnknown ? "OPERATION_UNKNOWN_OUTCOME" : cancelResult.error.code,
+    };
+  }
+
+  // 12. Provider cancellation confirmed: record success, consume approval, transition invoice to CANCELLED
+  const now = new Date();
+  const previousStatus = invoice.cashpilotStatus;
+  const previousPaypalStatus = invoice.paypalStatus;
+
+  try {
+    await db.$transaction(async (tx) => {
+      // Mark operation as SUCCESS
+      await tx.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          attemptState: OperationAttemptState.SUCCESS,
+          completedAt: now,
+          correlationId: cancelResult.correlationId,
+          isOutcomeUnknown: false,
+          providerResponse: { cancelled: true },
+        },
+      });
+
+      // Consume approval (mark USED)
+      await tx.approval.update({
+        where: { id: approval.id },
+        data: {
+          status: ApprovalStatus.USED,
+        },
+      });
+
+      // Update invoice status to CANCELLED (both cashpilotStatus and paypalStatus)
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          cashpilotStatus: CashPilotStatus.CANCELLED,
+          paypalStatus: "CANCELLED",
+          lastSyncAt: now,
+          syncIsStale: false,
+        },
+      });
+
+      // Record audit event: OPERATION_SUCCEEDED
+      await tx.activityEvent.create({
+        data: {
+          workspaceId,
+          invoiceId: invoice.id,
+          approvalId: approval.id,
+          operationId: operation.id,
+          eventType: ActivityEventType.OPERATION_SUCCEEDED,
+          actorType: ActorType.USER,
+          actorId,
+          description: `Invoice ${invoice.paypalInvoiceId} cancelled via PayPal Sandbox. Status changed from ${previousStatus} to CANCELLED.`,
+          metadata: {
+            paypalInvoiceId: invoice.paypalInvoiceId,
+            previousCashpilotStatus: previousStatus,
+            currentCashpilotStatus: CashPilotStatus.CANCELLED,
+            previousPaypalStatus,
+            currentPaypalStatus: "CANCELLED",
+            note: approvedNote,
+            subject: approvedSubject,
+            correlationId: cancelResult.correlationId,
+          },
+        },
+      });
+    });
+  } catch {
+    // Local DB update failed after provider accepted cancellation: mark outcome unknown
+    try {
+      await db.externalOperation.update({
+        where: { id: operation.id },
+        data: {
+          isOutcomeUnknown: true,
+          reconcileResult: "PayPal invoice cancelled but local database update failed",
+          errorCode: "DATABASE_PERSISTENCE_FAILED",
+        },
+      });
+    } catch {
+      // Suppress secondary error
+    }
+
+    return {
+      ok: false,
+      error: "PayPal invoice was cancelled on PayPal, but local database persistence failed. Reconciliation required.",
+      code: "DATABASE_PERSISTENCE_FAILED",
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      operationId: operation.id,
+      invoiceId: invoice.id,
+      paypalInvoiceId: invoice.paypalInvoiceId,
+      previousStatus,
+      currentStatus: CashPilotStatus.CANCELLED,
+      previousPaypalStatus,
+      currentPaypalStatus: "CANCELLED",
+      cancelledAt: now,
+      correlationId: cancelResult.correlationId,
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Status Refresh / Reconciliation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2199,6 +2755,14 @@ export async function syncInvoiceWithPayPal(
           } else if (rawStatus.toUpperCase() === "DRAFT") {
             resolvedState = OperationAttemptState.FAILED;
             reconcileResultMsg = "Reconciled: Invoice remains in DRAFT; send was not processed by PayPal";
+          }
+        } else if (op.operationType === OperationType.CANCEL_INVOICE) {
+          if (["CANCELLED", "VOIDED"].includes(rawStatus.toUpperCase())) {
+            resolvedState = OperationAttemptState.SUCCESS;
+            reconcileResultMsg = `Reconciled: PayPal confirmed invoice cancellation succeeded (status: ${rawStatus})`;
+          } else {
+            resolvedState = OperationAttemptState.FAILED;
+            reconcileResultMsg = `Reconciled: Invoice was not cancelled on PayPal; remains in active status (${rawStatus})`;
           }
         }
 

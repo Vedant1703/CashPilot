@@ -155,3 +155,37 @@ export function canSendReminder(status: CashPilotStatus): boolean {
     status === CashPilotStatus.OVERDUE
   );
 }
+
+/**
+ * Type guard: is this status one that permits cancelling the invoice on PayPal?
+ * Only sent, unpaid invoices (AWAITING_PAYMENT, DUE_SOON, OVERDUE) can be cancelled.
+ * Drafts, Paid, Cancelled, and Needs Review invoices cannot be cancelled.
+ */
+export function canCancelInvoice(
+  status: CashPilotStatus,
+  paypalStatus?: string | null
+): boolean {
+  if (
+    status !== CashPilotStatus.AWAITING_PAYMENT &&
+    status !== CashPilotStatus.DUE_SOON &&
+    status !== CashPilotStatus.OVERDUE
+  ) {
+    return false;
+  }
+  if (!paypalStatus) {
+    return false;
+  }
+  const norm = paypalStatus.trim().toUpperCase();
+  if (
+    norm === "PAID" ||
+    norm === "MARKED_AS_PAID" ||
+    norm === "PARTIALLY_PAID" ||
+    norm === "CANCELLED" ||
+    norm === "VOIDED" ||
+    norm === "DRAFT"
+  ) {
+    return false;
+  }
+  return true;
+}
+

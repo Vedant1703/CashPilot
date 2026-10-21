@@ -507,3 +507,104 @@ export async function sendPayPalReminder(
     },
   };
 }
+
+export interface PayPalCancelOptions {
+  subject?: string;
+  note?: string;
+  sendToInvoicer?: boolean;
+  sendToRecipient?: boolean;
+  requestId?: string;
+}
+
+/**
+ * Cancel a sent PayPal invoice.
+ *
+ * SRS §4 & Financial Integrity Rules:
+ *   - Provider endpoint: POST /v2/invoicing/invoices/{invoice_id}/cancel
+ *   - Only sent, unpaid invoices can be cancelled
+ *   - Returns 204 No Content on success (no JSON response body)
+ *   - Timeout handling flags outcome as UNKNOWN
+ */
+export async function cancelPayPalInvoice(
+  paypalInvoiceId: string,
+  options?: PayPalCancelOptions
+): Promise<PayPalApiResult<{ cancelled: true }>> {
+  const env = getServerEnv();
+  const token = await getPayPalAccessToken();
+
+  if (!token) {
+    return {
+      success: false,
+      error: {
+        code: "PAYPAL_NOT_CONFIGURED",
+        message: "PayPal Sandbox credentials are not configured.",
+      },
+    };
+  }
+
+  const url = `${env.PAYPAL_BASE_URL}/v2/invoicing/invoices/${paypalInvoiceId}/cancel`;
+
+  const note = options?.note;
+  const subject = options?.subject;
+  const sendToRecipient = options?.sendToRecipient ?? true;
+  const sendToInvoicer = options?.sendToInvoicer ?? false;
+  const requestId = options?.requestId;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+
+  if (requestId) {
+    headers["PayPal-Request-Id"] = requestId;
+  }
+
+  const payload: Record<string, unknown> = {
+    send_to_recipient: sendToRecipient,
+    send_to_invoicer: sendToInvoicer,
+  };
+  if (note) {
+    payload.note = note;
+  }
+  if (subject) {
+    payload.subject = subject;
+  }
+
+  const fetchResult = await fetchWithTimeout(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (fetchResult.timedOut) {
+    return {
+      success: false,
+      isOutcomeUnknown: true,
+      error: {
+        code: "TIMEOUT",
+        message: "PayPal cancellation timed out. Reconcile before retrying.",
+      },
+    };
+  }
+
+  const { response } = fetchResult;
+  const correlationId = response.headers.get("paypal-debug-id") ?? undefined;
+
+  // PayPal cancel endpoint returns 204 No Content (or 200) on confirmed success
+  if (response.status === 204 || response.status === 200) {
+    return { success: true, data: { cancelled: true }, correlationId };
+  }
+
+  const errorBody = await response.json().catch(() => ({}));
+  return {
+    success: false,
+    correlationId,
+    error: {
+      code: errorBody.name ?? "PAYPAL_CANCEL_ERROR",
+      message: errorBody.message ?? `PayPal invoice cancellation failed with HTTP ${response.status}`,
+      httpStatus: response.status,
+      details: errorBody.details,
+    },
+  };
+}
+
