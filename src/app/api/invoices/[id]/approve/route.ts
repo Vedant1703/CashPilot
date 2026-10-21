@@ -94,9 +94,11 @@ export async function POST(
       const status =
         result.code === "NOT_FOUND"
           ? 404
-          : result.code === "STALE_PAYLOAD_HASH"
+          : result.code === "STALE_PAYLOAD_HASH" ||
+            result.code === "PROVIDER_STATE_AMBIGUOUS"
           ? 409
-          : result.code === "INVALID_INVOICE_STATUS"
+          : result.code === "INVALID_INVOICE_STATUS" ||
+            result.code === "PAYPAL_INVOICE_REQUIRED"
           ? 400
           : 500;
 

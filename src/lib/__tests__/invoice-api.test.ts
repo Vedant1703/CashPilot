@@ -409,6 +409,28 @@ describe("Invoice Draft and Review APIs", () => {
     expect(json.data.PAYPAL_CLIENT_SECRET).toBeUndefined();
     expect(json.data.client.password).toBeUndefined();
     expect(json.data.token).toBeUndefined();
+
+    // Verify activities array for dynamic UI refresh
+    expect(Array.isArray(json.data.activities)).toBe(true);
+  });
+
+  it("includes activities timeline in GET /api/invoices/[id] to support dynamic UI refresh", async () => {
+    const req = new NextRequest("http://localhost:3000/api/invoices/demo-invoice-1?workspaceId=demo-workspace-1");
+    const res = await getInvoiceRoute(req, {
+      params: Promise.resolve({ id: "demo-invoice-1" }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.success).toBe(true);
+    expect(Array.isArray(json.data.activities)).toBe(true);
+    if (json.data.activities.length > 0) {
+      const act = json.data.activities[0];
+      expect(act.id).toBeDefined();
+      expect(act.eventType).toBeDefined();
+      expect(act.description).toBeDefined();
+      expect(act.createdAt).toBeDefined();
+    }
   });
 
   it("returns 404 for nonexistent invoice ID", async () => {

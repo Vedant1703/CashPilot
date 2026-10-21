@@ -161,7 +161,14 @@ export async function getInvoiceById(invoiceId: string, workspaceId: string) {
  * the deterministic material payload hash.
  */
 export async function getInvoice(invoiceId: string, workspaceId: string) {
-  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  const invoice = await db.invoice.findFirst({
+    where: { id: invoiceId, workspaceId },
+    include: {
+      client: true,
+      lineItems: { orderBy: { sortOrder: "asc" } },
+      activities: { orderBy: { createdAt: "desc" }, take: 15 },
+    },
+  });
   if (!invoice) {
     return { ok: false as const, error: "Invoice not found", code: "NOT_FOUND" };
   }
@@ -210,6 +217,15 @@ export async function getInvoice(invoiceId: string, workspaceId: string) {
           unitPriceMinorUnits: li.unitPriceMinorUnits,
           totalMinorUnits: li.totalMinorUnits,
           sortOrder: li.sortOrder,
+        })),
+        activities: (invoice.activities || []).map((a) => ({
+          id: a.id,
+          eventType: a.eventType,
+          actorType: a.actorType,
+          actorId: a.actorId,
+          description: a.description,
+          metadata: a.metadata as Record<string, unknown> | null,
+          createdAt: a.createdAt,
         })),
       },
       materialPayloadHash,
@@ -335,7 +351,7 @@ export async function createInvoice(
     );
 
     // Record audit event
-    await tx.activityEvent.create({
+    const createdActivity = await tx.activityEvent.create({
       data: {
         workspaceId,
         invoiceId: inv.id,
@@ -350,6 +366,7 @@ export async function createInvoice(
     return {
       ...inv,
       lineItems: createdLineItems,
+      activities: [createdActivity],
     };
   });
 
@@ -398,6 +415,15 @@ export async function createInvoice(
           unitPriceMinorUnits: li.unitPriceMinorUnits,
           totalMinorUnits: li.totalMinorUnits,
           sortOrder: li.sortOrder,
+        })),
+        activities: invoice.activities.map((a) => ({
+          id: a.id,
+          eventType: a.eventType,
+          actorType: a.actorType,
+          actorId: a.actorId,
+          description: a.description,
+          metadata: a.metadata as Record<string, unknown> | null,
+          createdAt: a.createdAt,
         })),
       },
       materialPayloadHash,
