@@ -28,7 +28,8 @@ import {
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
-import { canSendReminder } from "@/lib/paypal/status-mapper";
+import { CancelApprovalModal } from "./cancel-approval-modal";
+import { canSendReminder, canCancelInvoice } from "@/lib/paypal/status-mapper";
 
 export interface SerializedActivityEvent {
   id: string;
@@ -56,6 +57,7 @@ export interface SerializedInvoiceDetail {
   number: string | null;
   materialPayloadHash?: string;
   reminderMaterialPayloadHash?: string;
+  cancelMaterialPayloadHash?: string;
   isReminderCooldownActive?: boolean;
   recentReminderCompletedAt?: string | null;
   title: string | null;
@@ -109,6 +111,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   const [syncAlert, setSyncAlert] = useState<SyncAlert | null>(null);
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isRemindModalOpen, setIsRemindModalOpen] = useState(false);
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
 
   // Eligible to send only if in DRAFT state and has a PayPal Sandbox draft created
   const canSend = invoice.cashpilotStatus === CashPilotStatus.DRAFT && Boolean(invoice.paypalInvoiceId);
@@ -122,6 +125,53 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   );
 
   const canRemind = isReminderStatusEligible && !isWithinReminderCooldown;
+
+  // Eligible for cancellation: sent unpaid invoice with fresh provider state
+  const canCancel =
+    Boolean(invoice.paypalInvoiceId) &&
+    canCancelInvoice(invoice.cashpilotStatus, invoice.paypalStatus) &&
+    !invoice.syncIsStale &&
+    invoice.cashpilotStatus !== CashPilotStatus.NEEDS_REVIEW;
+
+  const handleCancelSuccess = (cancelResult: {
+    operationId: string;
+    invoiceId: string;
+    paypalInvoiceId: string;
+    previousStatus: CashPilotStatus;
+    currentStatus: CashPilotStatus;
+    previousPaypalStatus: string | null;
+    currentPaypalStatus: string;
+    cancelledAt: string;
+    correlationId?: string;
+  }) => {
+    setInvoice((prev) => ({
+      ...prev,
+      cashpilotStatus: cancelResult.currentStatus,
+      paypalStatus: cancelResult.currentPaypalStatus,
+      syncIsStale: false,
+    }));
+
+    setSyncAlert({
+      type: "success",
+      title: "Invoice Cancelled on PayPal Sandbox",
+      message: `Invoice ${invoice.number ?? invoice.id} has been permanently cancelled on PayPal Sandbox.`,
+      details:
+        "Workflow status updated to CANCELLED. Online payment can no longer be accepted for this invoice. Historical records and audit trail are retained.",
+    });
+
+    // Refresh activity list from GET /api/invoices/[id]
+    fetch(`/api/invoices/${invoice.id}?workspaceId=${invoice.workspaceId}`)
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success && json.data.activities) {
+          setInvoice((prev) => ({
+            ...prev,
+            activities: json.data.activities,
+          }));
+        }
+      })
+      .catch(() => {});
+  };
 
   const handleSendSuccess = (sendResult: {
     operationId: string;
@@ -482,6 +532,19 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
                 <span>Reminder in cooldown</span>
               </button>
             ))}
+
+          {/* Cancel Invoice Action Button (Only if eligible: sent unpaid invoice & fresh provider status) */}
+          {canCancel && (
+            <button
+              type="button"
+              onClick={() => setIsCancelModalOpen(true)}
+              aria-label="Approve and cancel invoice on PayPal Sandbox"
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl border border-[#FDA29B] bg-white hover:bg-[#FEF3F2] text-[#B42318] text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#D92D20] focus-visible:outline-hidden"
+            >
+              <XCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Cancel invoice</span>
+            </button>
+          )}
 
           {/* Safe Status Sync Action Button */}
           <button
@@ -876,6 +939,15 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         invoice={invoice}
         materialPayloadHash={invoice.reminderMaterialPayloadHash ?? ""}
         onRemindSuccess={handleRemindSuccess}
+      />
+
+      {/* Human Approval Gate Modal for CANCEL_INVOICE */}
+      <CancelApprovalModal
+        isOpen={isCancelModalOpen}
+        onClose={() => setIsCancelModalOpen(false)}
+        invoice={invoice}
+        materialPayloadHash={invoice.cancelMaterialPayloadHash ?? ""}
+        onCancelSuccess={handleCancelSuccess}
       />
 
       {/* MVP Limitations Notice */}

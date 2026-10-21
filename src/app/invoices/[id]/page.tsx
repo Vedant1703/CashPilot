@@ -84,6 +84,17 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     actionType: "SEND_REMINDER",
   });
 
+  const cancelMaterialPayloadHash = computeMaterialPayloadHash({
+    id: invoice.id,
+    workspaceId: invoice.workspaceId,
+    client: { email: invoice.client.email },
+    totalMinorUnits: invoice.totalMinorUnits,
+    currency: invoice.currency,
+    dueDate: invoice.dueDate,
+    lineItems: invoice.lineItems,
+    actionType: "CANCEL_INVOICE",
+  });
+
   const serializedInvoice: SerializedInvoiceDetail = {
     id: invoice.id,
     workspaceId: invoice.workspaceId,
@@ -91,6 +102,7 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     number: invoice.number,
     materialPayloadHash,
     reminderMaterialPayloadHash,
+    cancelMaterialPayloadHash,
     isReminderCooldownActive: Boolean(recentReminder),
     recentReminderCompletedAt: recentReminder?.completedAt ? recentReminder.completedAt.toISOString() : null,
     title: invoice.title,
