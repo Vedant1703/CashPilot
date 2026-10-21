@@ -133,6 +133,31 @@ describe("Invoice Drafting Studio Full Journey", () => {
     const invoiceId = draftJson.data.id;
     const originalHash = draftJson.data.materialPayloadHash;
 
+    // Highest priority check: Ensure materialPayloadHash is a valid 64-char hex SHA-256 and NEVER empty-string SHA-256
+    const EMPTY_STRING_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    expect(originalHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(originalHash).not.toBe(EMPTY_STRING_SHA256);
+
+    // Negative verification: Submitting empty string SHA-256 hash is rejected with 409 STALE_PAYLOAD_HASH
+    const rejectReq = new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/approve`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-workspace-id": workspaceId,
+        "x-actor-id": userId,
+      },
+      body: JSON.stringify({
+        actionType: "SEND_INVOICE",
+        reviewedPayloadHash: EMPTY_STRING_SHA256,
+      }),
+    });
+    const rejectRes = await approveRoute(rejectReq, {
+      params: Promise.resolve({ id: invoiceId }),
+    });
+    expect(rejectRes.status).toBe(409);
+    const rejectJson = await rejectRes.json();
+    expect(rejectJson.code).toBe("STALE_PAYLOAD_HASH");
+
     // -------------------------------------------------------------
     // STEP 3: Human Approval Bound to Exact Material Hash
     // -------------------------------------------------------------

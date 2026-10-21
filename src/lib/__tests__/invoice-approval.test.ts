@@ -229,6 +229,100 @@ describe("Secure Invoice Approval Gate", () => {
       });
       expect(hash1).not.toBe(hash2);
     });
+
+    it("changes hash when line item quantity changes", () => {
+      const hash1 = computeMaterialPayloadHash(basePayload);
+      const hash2 = computeMaterialPayloadHash({
+        ...basePayload,
+        lineItems: [
+          {
+            description: "Code Review",
+            quantity: 3,
+            unitPriceMinorUnits: 50000,
+          },
+        ],
+      });
+      expect(hash1).not.toBe(hash2);
+    });
+
+    it("changes hash when line item unit price changes", () => {
+      const hash1 = computeMaterialPayloadHash(basePayload);
+      const hash2 = computeMaterialPayloadHash({
+        ...basePayload,
+        lineItems: [
+          {
+            description: "Code Review",
+            quantity: 2,
+            unitPriceMinorUnits: 55000,
+          },
+        ],
+      });
+      expect(hash1).not.toBe(hash2);
+    });
+
+    it("changes hash when optional reminder note or subject changes", () => {
+      const hash1 = computeMaterialPayloadHash(basePayload);
+      const hashWithNote = computeMaterialPayloadHash({
+        ...basePayload,
+        note: "Please remit payment promptly.",
+      });
+      const hashWithSubject = computeMaterialPayloadHash({
+        ...basePayload,
+        subject: "Overdue Notice",
+      });
+
+      expect(hash1).not.toBe(hashWithNote);
+      expect(hash1).not.toBe(hashWithSubject);
+      expect(hashWithNote).not.toBe(hashWithSubject);
+    });
+
+    it("changes hash when invoiceId or workspaceId changes", () => {
+      const hash1 = computeMaterialPayloadHash(basePayload);
+      const hashDiffInvoice = computeMaterialPayloadHash({
+        ...basePayload,
+        id: "invoice-different-id",
+      });
+      const hashDiffWorkspace = computeMaterialPayloadHash({
+        ...basePayload,
+        workspaceId: "workspace-different-id",
+      });
+
+      expect(hash1).not.toBe(hashDiffInvoice);
+      expect(hash1).not.toBe(hashDiffWorkspace);
+    });
+
+    it("never produces the empty-string SHA-256 hash for a valid invoice payload", () => {
+      const EMPTY_STRING_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+      const hash = computeMaterialPayloadHash(basePayload);
+
+      expect(hash).not.toBe(EMPTY_STRING_SHA256);
+      expect(hash).toHaveLength(64);
+      expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it("guarantees deterministic canonicalization regardless of object property insertion order", () => {
+      const payloadReordered = {
+        actionType: "SEND_INVOICE" as const,
+        totalMinorUnits: 105000,
+        currency: "USD",
+        lineItems: [
+          {
+            unitPriceMinorUnits: 50000,
+            quantity: 2,
+            description: "Code Review",
+          },
+        ],
+        dueDate: "2026-11-01",
+        workspaceId: "ws-test-1",
+        client: { email: "billing@client.com" },
+        id: "inv-test-hash-1",
+      };
+
+      const hashOriginal = computeMaterialPayloadHash(basePayload);
+      const hashReordered = computeMaterialPayloadHash(payloadReordered);
+
+      expect(hashOriginal).toBe(hashReordered);
+    });
   });
 
   // ───────────────────────────────────────────────────────────────────────────
