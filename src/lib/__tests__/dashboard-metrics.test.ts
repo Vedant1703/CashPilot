@@ -5,7 +5,6 @@ import {
   groupInvoicesForCollections,
   getInvoiceProvenance,
   diffInDays,
-  parseDate,
   type InvoiceRecord,
 } from "@/lib/dashboard/metrics";
 
