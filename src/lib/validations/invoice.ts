@@ -164,6 +164,10 @@ export const aiInvoiceDraftSchema = z.object({
 
   notes: z.string().max(2000).optional(),
 
+  taxRatePercent: z.number().min(0).max(50).optional(),
+
+  terms: z.string().max(1000).optional(),
+
   missingFields: z
     .array(z.string())
     .optional()
