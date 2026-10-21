@@ -5,6 +5,7 @@ import { AppHeader } from "@/components/layout/app-header";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { InvoiceDetailView, SerializedInvoiceDetail } from "@/components/invoices/invoice-detail-view";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
+import { OperationType, OperationAttemptState } from "@prisma/client";
 
 /**
  * Invoice Detail Page — /invoices/[id]
@@ -21,6 +22,21 @@ import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 
 interface InvoiceDetailPageProps {
   params: Promise<{ id: string }>;
+}
+
+async function findRecentReminder(invoiceId: string, workspaceId: string) {
+  const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - REMINDER_COOLDOWN_MS);
+  return db.externalOperation.findFirst({
+    where: {
+      invoiceId,
+      workspaceId,
+      operationType: OperationType.SEND_REMINDER,
+      attemptState: OperationAttemptState.SUCCESS,
+      completedAt: { gt: cutoff },
+    },
+    orderBy: { completedAt: "desc" },
+  });
 }
 
 async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
@@ -44,6 +60,8 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     return notFound();
   }
 
+  const recentReminder = await findRecentReminder(invoice.id, invoice.workspaceId);
+
   const materialPayloadHash = computeMaterialPayloadHash({
     id: invoice.id,
     workspaceId: invoice.workspaceId,
@@ -55,12 +73,26 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     actionType: "SEND_INVOICE",
   });
 
+  const reminderMaterialPayloadHash = computeMaterialPayloadHash({
+    id: invoice.id,
+    workspaceId: invoice.workspaceId,
+    client: { email: invoice.client.email },
+    totalMinorUnits: invoice.totalMinorUnits,
+    currency: invoice.currency,
+    dueDate: invoice.dueDate,
+    lineItems: invoice.lineItems,
+    actionType: "SEND_REMINDER",
+  });
+
   const serializedInvoice: SerializedInvoiceDetail = {
     id: invoice.id,
     workspaceId: invoice.workspaceId,
     clientId: invoice.clientId,
     number: invoice.number,
     materialPayloadHash,
+    reminderMaterialPayloadHash,
+    isReminderCooldownActive: Boolean(recentReminder),
+    recentReminderCompletedAt: recentReminder?.completedAt ? recentReminder.completedAt.toISOString() : null,
     title: invoice.title,
     notes: invoice.notes,
     terms: invoice.terms,

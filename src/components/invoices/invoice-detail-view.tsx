@@ -27,6 +27,8 @@ import {
   Info,
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
+import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
+import { canSendReminder } from "@/lib/paypal/status-mapper";
 
 export interface SerializedActivityEvent {
   id: string;
@@ -53,6 +55,9 @@ export interface SerializedInvoiceDetail {
   clientId: string;
   number: string | null;
   materialPayloadHash?: string;
+  reminderMaterialPayloadHash?: string;
+  isReminderCooldownActive?: boolean;
+  recentReminderCompletedAt?: string | null;
   title: string | null;
   notes?: string | null;
   terms?: string | null;
@@ -103,9 +108,20 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncAlert, setSyncAlert] = useState<SyncAlert | null>(null);
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
+  const [isRemindModalOpen, setIsRemindModalOpen] = useState(false);
 
   // Eligible to send only if in DRAFT state and has a PayPal Sandbox draft created
   const canSend = invoice.cashpilotStatus === CashPilotStatus.DRAFT && Boolean(invoice.paypalInvoiceId);
+
+  // Eligible for reminder only if in AWAITING_PAYMENT, DUE_SOON, or OVERDUE and has PayPal invoice ID
+  const isReminderStatusEligible = canSendReminder(invoice.cashpilotStatus) && Boolean(invoice.paypalInvoiceId);
+
+  // Cooldown: at most once every 24 hours
+  const isWithinReminderCooldown = Boolean(
+    invoice.isReminderCooldownActive || invoice.recentReminderCompletedAt
+  );
+
+  const canRemind = isReminderStatusEligible && !isWithinReminderCooldown;
 
   const handleSendSuccess = (sendResult: {
     operationId: string;
@@ -129,6 +145,44 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
       message: `Invoice ${invoice.number ?? invoice.id} has been dispatched to ${invoice.client.email}. PayPal status is now ${sendResult.paypalStatus}.`,
       details:
         "Workflow status updated to Awaiting Payment. (Note: A sent invoice is unpaid; payment will be recorded only when PayPal confirms receipt.)",
+    });
+
+    // Refresh activity list from GET /api/invoices/[id]
+    fetch(`/api/invoices/${invoice.id}?workspaceId=${invoice.workspaceId}`)
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success && json.data.activities) {
+          setInvoice((prev) => ({
+            ...prev,
+            activities: json.data.activities,
+          }));
+        }
+      })
+      .catch(() => {});
+  };
+
+  const handleRemindSuccess = (remindResult: {
+    operationId: string;
+    invoiceId: string;
+    paypalInvoiceId: string;
+    recipientEmail: string;
+    reminded: boolean;
+    remindedAt: string;
+    correlationId?: string;
+  }) => {
+    setInvoice((prev) => ({
+      ...prev,
+      isReminderCooldownActive: true,
+      recentReminderCompletedAt: remindResult.remindedAt,
+      lastSyncAt: remindResult.remindedAt,
+      syncIsStale: false,
+    }));
+
+    setSyncAlert({
+      type: "success",
+      title: "Payment Reminder Sent via PayPal Sandbox",
+      message: `A payment reminder for invoice ${invoice.number ?? invoice.id} has been dispatched to ${remindResult.recipientEmail}.`,
+      details: `Invoice status remains ${invoice.cashpilotStatus}. (Note: A reminder is a notification only; it does not alter invoice balance or establish a Paid status.)`,
     });
 
     // Refresh activity list from GET /api/invoices/[id]
@@ -403,6 +457,31 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
               <span>Send invoice</span>
             </button>
           )}
+
+          {/* Send Reminder Action Button (Only if eligible: AWAITING_PAYMENT, DUE_SOON, OVERDUE) */}
+          {isReminderStatusEligible &&
+            (canRemind ? (
+              <button
+                type="button"
+                onClick={() => setIsRemindModalOpen(true)}
+                aria-label="Approve and send payment reminder via PayPal Sandbox"
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl bg-[#0F6CBD] hover:bg-[#0C5494] text-white text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#0F6CBD] focus-visible:outline-hidden"
+              >
+                <Bell className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>Send reminder</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled
+                title={`Reminder cooldown active: A reminder was sent within the last 24 hours (${new Date(invoice.recentReminderCompletedAt!).toLocaleTimeString()}).`}
+                aria-label="Send reminder disabled: 24-hour cooldown active"
+                className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl border border-[#E3E8EF] bg-[#F6F5F1] text-[#8C9BAE] text-xs font-semibold cursor-not-allowed"
+              >
+                <Bell className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                <span>Reminder in cooldown</span>
+              </button>
+            ))}
 
           {/* Safe Status Sync Action Button */}
           <button
@@ -788,6 +867,15 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         invoice={invoice}
         materialPayloadHash={invoice.materialPayloadHash ?? ""}
         onSendSuccess={handleSendSuccess}
+      />
+
+      {/* Human Approval Gate Modal for SEND_REMINDER */}
+      <SendReminderApprovalModal
+        isOpen={isRemindModalOpen}
+        onClose={() => setIsRemindModalOpen(false)}
+        invoice={invoice}
+        materialPayloadHash={invoice.reminderMaterialPayloadHash ?? ""}
+        onRemindSuccess={handleRemindSuccess}
       />
 
       {/* MVP Limitations Notice */}
