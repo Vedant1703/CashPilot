@@ -40,6 +40,8 @@ temp/
 coverage/
 *.lcov
 .nyc_output/
+test-results/
+playwright-report/
 
 # IDE and Editor configs (keep project configs clean)
 .idea/
