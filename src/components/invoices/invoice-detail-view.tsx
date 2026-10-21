@@ -26,6 +26,7 @@ import {
   Clock,
   Info,
 } from "lucide-react";
+import { SendApprovalModal } from "./send-approval-modal";
 
 export interface SerializedActivityEvent {
   id: string;
@@ -51,6 +52,7 @@ export interface SerializedInvoiceDetail {
   workspaceId: string;
   clientId: string;
   number: string | null;
+  materialPayloadHash?: string;
   title: string | null;
   notes?: string | null;
   terms?: string | null;
@@ -100,6 +102,48 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   const [invoice, setInvoice] = useState<SerializedInvoiceDetail>(initialInvoice);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncAlert, setSyncAlert] = useState<SyncAlert | null>(null);
+  const [isSendModalOpen, setIsSendModalOpen] = useState(false);
+
+  // Eligible to send only if in DRAFT state and has a PayPal Sandbox draft created
+  const canSend = invoice.cashpilotStatus === CashPilotStatus.DRAFT && Boolean(invoice.paypalInvoiceId);
+
+  const handleSendSuccess = (sendResult: {
+    operationId: string;
+    invoiceId: string;
+    paypalInvoiceId: string;
+    paypalStatus: string;
+    cashpilotStatus: CashPilotStatus;
+    sentAt: string;
+    correlationId?: string;
+  }) => {
+    setInvoice((prev) => ({
+      ...prev,
+      cashpilotStatus: sendResult.cashpilotStatus,
+      paypalStatus: sendResult.paypalStatus,
+      syncIsStale: false,
+    }));
+
+    setSyncAlert({
+      type: "success",
+      title: "Invoice Sent via PayPal Sandbox",
+      message: `Invoice ${invoice.number ?? invoice.id} has been dispatched to ${invoice.client.email}. PayPal status is now ${sendResult.paypalStatus}.`,
+      details:
+        "Workflow status updated to Awaiting Payment. (Note: A sent invoice is unpaid; payment will be recorded only when PayPal confirms receipt.)",
+    });
+
+    // Refresh activity list from GET /api/invoices/[id]
+    fetch(`/api/invoices/${invoice.id}?workspaceId=${invoice.workspaceId}`)
+      .then((res) => res.json())
+      .then((json) => {
+        if (json.success && json.data.activities) {
+          setInvoice((prev) => ({
+            ...prev,
+            activities: json.data.activities,
+          }));
+        }
+      })
+      .catch(() => {});
+  };
 
   const provenance = getInvoiceProvenance({
     ...invoice,
@@ -347,6 +391,19 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Send Invoice Action Button (Only if eligible: DRAFT status & PayPal draft exists) */}
+          {canSend && (
+            <button
+              type="button"
+              onClick={() => setIsSendModalOpen(true)}
+              aria-label="Approve and send invoice via PayPal Sandbox"
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl bg-[#B4440B] hover:bg-[#933708] text-white text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#B4440B] focus-visible:outline-hidden"
+            >
+              <Send className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Send invoice</span>
+            </button>
+          )}
+
           {/* Safe Status Sync Action Button */}
           <button
             type="button"
@@ -723,6 +780,15 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
           </div>
         </div>
       </div>
+
+      {/* Human Approval Gate Modal for SEND_INVOICE */}
+      <SendApprovalModal
+        isOpen={isSendModalOpen}
+        onClose={() => setIsSendModalOpen(false)}
+        invoice={invoice}
+        materialPayloadHash={invoice.materialPayloadHash ?? ""}
+        onSendSuccess={handleSendSuccess}
+      />
 
       {/* MVP Limitations Notice */}
       <footer className="pt-4 border-t border-[#E3E8EF] text-[11px] text-[#5E718D] flex flex-col sm:flex-row items-center justify-between gap-2">

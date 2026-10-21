@@ -4,6 +4,7 @@ import { db } from "@/lib/db/client";
 import { AppHeader } from "@/components/layout/app-header";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { InvoiceDetailView, SerializedInvoiceDetail } from "@/components/invoices/invoice-detail-view";
+import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 
 /**
  * Invoice Detail Page — /invoices/[id]
@@ -11,8 +12,8 @@ import { InvoiceDetailView, SerializedInvoiceDetail } from "@/components/invoice
  * Displays authoritative server-calculated invoice data, client info, line items,
  * and PayPal Sandbox reconciliation status.
  *
- * Consequential financial actions (send, reminder, cancel) are not triggered from here;
- * this page provides read-only inspection and safe status synchronization via POST /api/invoices/[id]/sync.
+ * Consequential financial actions (such as SEND_INVOICE) require explicit human approval
+ * bound to the exact server-calculated material payload hash.
  *
  * MVP Authentication Limitation:
  * CashPilot uses workspace-scoped sessions for Sandbox verification. Production requires OAuth 2.0 / JWT session auth.
@@ -43,11 +44,23 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     return notFound();
   }
 
+  const materialPayloadHash = computeMaterialPayloadHash({
+    id: invoice.id,
+    workspaceId: invoice.workspaceId,
+    client: { email: invoice.client.email },
+    totalMinorUnits: invoice.totalMinorUnits,
+    currency: invoice.currency,
+    dueDate: invoice.dueDate,
+    lineItems: invoice.lineItems,
+    actionType: "SEND_INVOICE",
+  });
+
   const serializedInvoice: SerializedInvoiceDetail = {
     id: invoice.id,
     workspaceId: invoice.workspaceId,
     clientId: invoice.clientId,
     number: invoice.number,
+    materialPayloadHash,
     title: invoice.title,
     notes: invoice.notes,
     terms: invoice.terms,
