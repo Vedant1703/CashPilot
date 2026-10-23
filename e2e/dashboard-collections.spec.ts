@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Journey A: Dashboard and Collections", () => {
-  test("loads dashboard, renders metrics, and navigates to collections and invoice detail", async ({
+  test("loads dashboard, renders metrics, and navigates to collections", async ({
     page,
     isMobile,
   }) => {
@@ -30,25 +30,9 @@ test.describe("Journey A: Dashboard and Collections", () => {
     await expect(page).toHaveURL(/\/collections/);
     await expect(page.locator("h1").filter({ hasText: "Collections Workspace" })).toBeVisible();
 
-    // Verify Kanban Board view is rendered
+    // Collections is board-only — verify Kanban columns are rendered
     await expect(page.getByText("Awaiting Payment", { exact: false }).first()).toBeVisible();
     await expect(page.getByText("Overdue", { exact: false }).first()).toBeVisible();
-
-    // 3. Switch to Table View via in-page toggle (not a separate nav link)
-    await page.goto("/collections?view=table");
-    await expect(page).toHaveURL(/view=table/);
-    await expect(page.locator("table")).toBeVisible();
-
-    // 4. Navigate into an Invoice Detail
-    const invoiceLink = page.locator("a[href^='/invoices/demo-invoice-']").first();
-    await expect(invoiceLink).toBeVisible();
-    await invoiceLink.click();
-
-    // Verify Invoice Detail loads
-    await expect(page).toHaveURL(/\/invoices\/demo-invoice-/);
-    await expect(page.getByRole("heading", { name: "Invoice", exact: true })).toBeVisible();
-    await expect(page.locator("text=Grand Total:")).toBeVisible();
-    await expect(page.locator("text=Line Items & Financial Calculation")).toBeVisible();
   });
 
   test("maintains responsive usability on mobile viewport", async ({ page, isMobile }) => {
@@ -67,57 +51,60 @@ test.describe("Journey A: Dashboard and Collections", () => {
   });
 });
 
-test.describe("Navigation: Collections view switching", () => {
-  test("Collections page defaults to Board view and allows switching to Table view", async ({ page }) => {
-    await page.goto("/collections");
-    await expect(page).toHaveURL("/collections");
-
-    // Board view should be active
-    await expect(page.locator("[aria-label='View Mode'] a[aria-current='true']")).toContainText("Board");
-
-    // Switch to Table via in-page toggle
-    await page.locator("[aria-label='View Mode'] a[href='/collections?view=table']").click();
-    await expect(page).toHaveURL(/view=table/);
-    await expect(page.locator("table")).toBeVisible();
-
-    // Table link should now be active
-    await expect(page.locator("[aria-label='View Mode'] a[aria-current='true']")).toContainText("Table");
-
-    // Switch back to Board
-    await page.locator("[aria-label='View Mode'] a[href='/collections']").click();
-    await expect(page).toHaveURL("/collections");
-    await expect(page.locator("[aria-label='View Mode'] a[aria-current='true']")).toContainText("Board");
-  });
-
-  test("Collections Board and Table views display consistent invoices dataset", async ({ page }) => {
-    // Load table view and count rows via the ALL tab badge
-    await page.goto("/collections?view=table");
-    await expect(page.locator("table")).toBeVisible();
-
-    const allBadge = page.locator("button[role='tab']:has-text('All')").locator("span").nth(1);
-    const totalCount = await allBadge.textContent();
-
-    // Board view should load without error
+test.describe("Collections: Kanban board only", () => {
+  test("Collections page renders the Kanban board and does NOT render a Board/Table toggle", async ({
+    page,
+  }) => {
     await page.goto("/collections");
     await expect(page.locator("h1").filter({ hasText: "Collections Workspace" })).toBeVisible();
-    // Kanban columns should be present (same data source)
-    await expect(page.getByText("Draft", { exact: false }).first()).toBeVisible();
 
-    // Table ALL count should remain consistent
-    await page.goto("/collections?view=table");
-    const allBadgeAgain = page.locator("button[role='tab']:has-text('All')").locator("span").nth(1);
-    await expect(allBadgeAgain).toHaveText(totalCount!);
+    // Kanban columns must be present
+    await expect(page.getByText("Draft", { exact: false }).first()).toBeVisible();
+    await expect(page.getByText("Awaiting Payment", { exact: false }).first()).toBeVisible();
+    await expect(page.getByText("Overdue", { exact: false }).first()).toBeVisible();
+
+    // No Board/Table view toggle must exist on the Collections page
+    await expect(page.locator("[aria-label='View Mode']")).not.toBeVisible();
+
+    // No <table> element on the default Collections page
+    await expect(page.locator("table")).not.toBeVisible();
+  });
+
+  test("Collections page with ?stage param still loads the board", async ({ page }) => {
+    // Dashboard deep-links use ?stage=overdue; Collections should still show the board
+    await page.goto("/collections?stage=overdue");
+    await expect(page.locator("h1").filter({ hasText: "Collections Workspace" })).toBeVisible();
+    await expect(page.getByText("Overdue", { exact: false }).first()).toBeVisible();
+    // Board — no table
+    await expect(page.locator("table")).not.toBeVisible();
+  });
+
+  test("Invoice cards on the board link to invoice detail pages", async ({ page }) => {
+    await page.goto("/collections");
+    await expect(page.locator("h1").filter({ hasText: "Collections Workspace" })).toBeVisible();
+
+    // At least one card link to /invoices/[id] must exist
+    const invoiceLink = page.locator("a[href^='/invoices/demo-invoice-']").first();
+    await expect(invoiceLink).toBeVisible();
+    await invoiceLink.click();
+
+    await expect(page).toHaveURL(/\/invoices\/demo-invoice-/);
+    await expect(page.getByRole("heading", { name: "Invoice", exact: true })).toBeVisible();
+    await expect(page.locator("text=Grand Total:")).toBeVisible();
   });
 });
 
 test.describe("Navigation: Invoices directory page", () => {
-  test("Invoices nav link opens the dedicated invoice directory at /invoices", async ({ page, isMobile }) => {
+  test("Invoices nav link opens the dedicated invoice directory at /invoices", async ({
+    page,
+    isMobile,
+  }) => {
     await page.goto("/");
 
     if (isMobile) {
       await page.goto("/invoices");
     } else {
-      // Click the desktop nav Invoices link (not the /invoices/new CTA)
+      // Desktop nav: click the Invoices link (not the /invoices/new CTA button)
       await page.locator("nav[aria-label='Main Navigation'] a[href='/invoices']").click();
     }
 
@@ -129,9 +116,34 @@ test.describe("Navigation: Invoices directory page", () => {
   test("Invoices directory is separate from the Collections Board URL", async ({ page }) => {
     await page.goto("/invoices");
     await expect(page).toHaveURL("/invoices");
-    // Should NOT be on /collections
     await expect(page).not.toHaveURL(/\/collections/);
     await expect(page.locator("table")).toBeVisible();
+  });
+
+  test("Invoices directory shows all status filter tabs", async ({ page }) => {
+    await page.goto("/invoices");
+    await expect(page.locator("table")).toBeVisible();
+
+    const tabList = page.locator("[role='tablist']");
+    await expect(tabList).toBeVisible();
+    await expect(tabList.locator("button", { hasText: "All" })).toBeVisible();
+    await expect(tabList.locator("button", { hasText: "Draft" })).toBeVisible();
+    await expect(tabList.locator("button", { hasText: "Overdue" })).toBeVisible();
+    await expect(tabList.locator("button", { hasText: "Paid" })).toBeVisible();
+  });
+
+  test("Invoices directory navigates to invoice detail", async ({ page }) => {
+    await page.goto("/invoices");
+    await expect(page.locator("table")).toBeVisible();
+
+    const invoiceLink = page.locator("a[href^='/invoices/demo-invoice-']").first();
+    await expect(invoiceLink).toBeVisible();
+    await invoiceLink.click();
+
+    await expect(page).toHaveURL(/\/invoices\/demo-invoice-/);
+    await expect(page.getByRole("heading", { name: "Invoice", exact: true })).toBeVisible();
+    await expect(page.locator("text=Grand Total:")).toBeVisible();
+    await expect(page.locator("text=Line Items & Financial Calculation")).toBeVisible();
   });
 
   test("Invoices nav link is marked active when on /invoices", async ({ page }) => {
@@ -140,12 +152,19 @@ test.describe("Navigation: Invoices directory page", () => {
     await expect(invoicesLink).toHaveAttribute("aria-current", "page");
   });
 
-  test("Collections nav link is active on /collections and inactive on /invoices", async ({ page }) => {
+  test("Collections nav link is active on /collections and inactive on /invoices", async ({
+    page,
+  }) => {
     await page.goto("/collections");
-    const collectionsLink = page.locator("nav[aria-label='Main Navigation'] a[href='/collections']");
+    const collectionsLink = page
+      .locator("nav[aria-label='Main Navigation'] a[href='/collections']")
+      .first();
     await expect(collectionsLink).toHaveAttribute("aria-current", "page");
 
     await page.goto("/invoices");
-    await expect(collectionsLink).not.toHaveAttribute("aria-current", "page");
+    const collectionsLinkAgain = page
+      .locator("nav[aria-label='Main Navigation'] a[href='/collections']")
+      .first();
+    await expect(collectionsLinkAgain).not.toHaveAttribute("aria-current", "page");
   });
 });
