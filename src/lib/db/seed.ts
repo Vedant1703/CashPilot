@@ -120,6 +120,7 @@ async function main() {
       taxRateBasisPoints: 0,
       dueDate: subtractDays(today, 15), // OVERDUE
       cashpilotStatus: CashPilotStatus.OVERDUE,
+      paypalInvoiceId: "INV2-DEMO-OVERDUE-0003",
       paypalStatus: "SENT",
       isDemoData: true,
     },
