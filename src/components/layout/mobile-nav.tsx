@@ -23,10 +23,10 @@ function MobileNavTabs() {
       active: pathname.startsWith("/invoices"),
     },
     {
-      href: "#activity",
-      label: "Activity",
+      href: "/navi-ai",
+      label: "Ask Navi",
       icon: Sparkles,
-      active: false,
+      active: pathname.startsWith("/navi-ai"),
     },
   ];
 

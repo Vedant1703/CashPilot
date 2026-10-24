@@ -28,6 +28,11 @@ function HeaderNavLinks() {
       label: "Invoices",
       active: pathname.startsWith("/invoices"),
     },
+    {
+      href: "/navi-ai",
+      label: "Ask Navi",
+      active: pathname.startsWith("/navi-ai"),
+    },
   ];
 
   return (
@@ -52,7 +57,7 @@ function HeaderNavLinks() {
 
 function HeaderNavFallback() {
   return (
-    <nav className="hidden md:flex items-center gap-1" aria-label="Main Navigation">
+    <nav className="hidden md:flex items-center gap-1" aria-label="Main Navigation Fallback">
       <Link href="/" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
         Dashboard
       </Link>
@@ -61,6 +66,9 @@ function HeaderNavFallback() {
       </Link>
       <Link href="/invoices" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
         Invoices
+      </Link>
+      <Link href="/navi-ai" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
+        Ask Navi
       </Link>
     </nav>
   );
@@ -184,6 +192,13 @@ export function AppHeader({
             className="block px-3 py-2.5 rounded-xl text-sm font-medium text-[#12263F] hover:bg-[#F6F5F1]"
           >
             Invoices
+          </Link>
+          <Link
+            href="/navi-ai"
+            onClick={() => setMobileMenuOpen(false)}
+            className="block px-3 py-2.5 rounded-xl text-sm font-medium text-[#12263F] hover:bg-[#F6F5F1]"
+          >
+            Ask Navi
           </Link>
           <div className="pt-2 border-t border-[#E3E8EF]">
             <button

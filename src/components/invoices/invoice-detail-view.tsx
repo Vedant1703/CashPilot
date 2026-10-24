@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { CashPilotStatus, type Prisma } from "@prisma/client";
 import { StatusBadge } from "@/components/invoices/status-badge";
@@ -125,6 +125,15 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   );
 
   const canRemind = isReminderStatusEligible && !isWithinReminderCooldown;
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.search.includes("action=remind") && canRemind) {
+      const timer = setTimeout(() => {
+        setIsRemindModalOpen(true);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [canRemind]);
 
   // Eligible for cancellation: sent unpaid invoice with fresh provider state
   const canCancel =
