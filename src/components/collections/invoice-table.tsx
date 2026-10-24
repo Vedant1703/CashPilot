@@ -1,7 +1,8 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import Link from "next/link";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 import { formatMoney } from "@/lib/money";
 import { StatusBadge } from "@/components/invoices/status-badge";
 import {
@@ -13,22 +14,96 @@ import {
 import { CashPilotStatus } from "@prisma/client";
 import { Search, ArrowRight, ArrowUpDown } from "lucide-react";
 
+export function parseStatusParam(param: string | null | undefined): string {
+  if (!param) return "ALL";
+  const normalized = param.toLowerCase().trim();
+  switch (normalized) {
+    case "draft":
+      return "DRAFT";
+    case "unpaid":
+    case "awaiting":
+    case "awaiting_payment":
+      return "AWAITING_PAYMENT";
+    case "due_soon":
+    case "duesoon":
+      return "DUE_SOON";
+    case "overdue":
+      return "OVERDUE";
+    case "paid":
+      return "PAID";
+    case "needs_review":
+    case "needsreview":
+      return "NEEDS_REVIEW";
+    default:
+      return "ALL";
+  }
+}
+
+export function filterToStatusParam(filterKey: string): string | null {
+  switch (filterKey) {
+    case "DRAFT":
+      return "draft";
+    case "AWAITING_PAYMENT":
+      return "unpaid";
+    case "DUE_SOON":
+      return "due_soon";
+    case "OVERDUE":
+      return "overdue";
+    case "PAID":
+      return "paid";
+    case "NEEDS_REVIEW":
+      return "needs_review";
+    default:
+      return null; // canonical default "ALL" view (/invoices) has no status param
+  }
+}
+
 interface InvoiceTableProps {
   invoices: InvoiceRecord[];
   initialFilter?: string;
+  initialSearch?: string;
   nowUtc?: string;
 }
 
 export function InvoiceTable({
   invoices,
   initialFilter = "ALL",
+  initialSearch = "",
   nowUtc,
 }: InvoiceTableProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const now = useMemo(() => (nowUtc ? new Date(nowUtc) : new Date()), [nowUtc]);
-  const [filter, setFilter] = useState<string>(initialFilter);
-  const [searchQuery, setSearchQuery] = useState("");
+
+  // Derive filter from URL query param; safely fall back to initialFilter or "ALL"
+  const urlStatusParam = searchParams?.get("status") ?? searchParams?.get("filter");
+  const filter = parseStatusParam(urlStatusParam ?? initialFilter);
+
+  // Derive search query from URL query param, falling back to initialSearch
+  const urlSearchParam = searchParams?.get("q") ?? searchParams?.get("search") ?? "";
+  const [prevUrlSearch, setPrevUrlSearch] = useState(urlSearchParam);
+  const [searchQuery, setSearchQuery] = useState(urlSearchParam || initialSearch);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Synchronize local search input when URL changes (e.g. browser back/forward)
+  if (urlSearchParam !== prevUrlSearch) {
+    setPrevUrlSearch(urlSearchParam);
+    setSearchQuery(urlSearchParam);
+  }
+
   const [sortField, setSortField] = useState<"dueDate" | "amount" | "number">("dueDate");
   const [sortAsc, setSortAsc] = useState<boolean>(true);
+
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
 
   // Filter tabs config
   const tabs = [
@@ -40,6 +115,66 @@ export function InvoiceTable({
     { key: "PAID", label: "Paid" },
     { key: "NEEDS_REVIEW", label: "Needs Review" },
   ];
+
+  // Update status filter in URL while preserving search query
+  const handleTabClick = (tabKey: string) => {
+    const nextParams = new URLSearchParams();
+    const statusParam = filterToStatusParam(tabKey);
+    if (statusParam) {
+      nextParams.set("status", statusParam);
+    }
+    if (searchQuery.trim()) {
+      nextParams.set("q", searchQuery.trim());
+    }
+
+    const queryStr = nextParams.toString();
+    const nextUrl = queryStr ? `${pathname}?${queryStr}` : pathname;
+    router.push(nextUrl, { scroll: false });
+  };
+
+  // Update search query state and URL (debounced to avoid typing lag)
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    debounceTimerRef.current = setTimeout(() => {
+      const nextParams = new URLSearchParams();
+      const statusParam = filterToStatusParam(filter);
+      if (statusParam) {
+        nextParams.set("status", statusParam);
+      }
+      if (val.trim()) {
+        nextParams.set("q", val.trim());
+      }
+
+      const queryStr = nextParams.toString();
+      const nextUrl = queryStr ? `${pathname}?${queryStr}` : pathname;
+      router.replace(nextUrl, { scroll: false });
+    }, 200);
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+      const nextParams = new URLSearchParams();
+      const statusParam = filterToStatusParam(filter);
+      if (statusParam) {
+        nextParams.set("status", statusParam);
+      }
+      if (searchQuery.trim()) {
+        nextParams.set("q", searchQuery.trim());
+      }
+
+      const queryStr = nextParams.toString();
+      const nextUrl = queryStr ? `${pathname}?${queryStr}` : pathname;
+      router.replace(nextUrl, { scroll: false });
+    }
+  };
 
   // Filter and sort invoices
   const filteredInvoices = useMemo(() => {
@@ -66,14 +201,35 @@ export function InvoiceTable({
           }
         }
 
-        // Search filtering
+        // Search filtering: matches invoice number, id, paypal ID, client name, company, title, email
         if (searchQuery.trim().length > 0) {
-          const q = searchQuery.toLowerCase();
-          const matchNumber = inv.number?.toLowerCase().includes(q) ?? false;
+          const q = searchQuery.toLowerCase().trim();
+          const cleanQ = q.replace(/[^a-z0-9]/gi, "");
+
+          const matchNumber =
+            (inv.number?.toLowerCase().includes(q) ?? false) ||
+            (cleanQ.length > 0 &&
+              (inv.number?.replace(/[^a-z0-9]/gi, "").toLowerCase().includes(cleanQ) ?? false));
+          const matchId =
+            inv.id.toLowerCase().includes(q) ||
+            (cleanQ.length > 0 && inv.id.replace(/[^a-z0-9]/gi, "").toLowerCase().includes(cleanQ));
+          const matchPayPalId = inv.paypalInvoiceId?.toLowerCase().includes(q) ?? false;
           const matchClient = inv.client.name.toLowerCase().includes(q);
+          const matchCompany = inv.client.company?.toLowerCase().includes(q) ?? false;
           const matchTitle = inv.title?.toLowerCase().includes(q) ?? false;
           const matchEmail = inv.client.email.toLowerCase().includes(q);
-          if (!matchNumber && !matchClient && !matchTitle && !matchEmail) return false;
+
+          if (
+            !matchNumber &&
+            !matchId &&
+            !matchPayPalId &&
+            !matchClient &&
+            !matchCompany &&
+            !matchTitle &&
+            !matchEmail
+          ) {
+            return false;
+          }
         }
 
         return true;
@@ -139,7 +295,7 @@ export function InvoiceTable({
                 type="button"
                 role="tab"
                 aria-selected={isActive}
-                onClick={() => setFilter(tab.key)}
+                onClick={() => handleTabClick(tab.key)}
                 className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-colors touch-target ${
                   isActive
                     ? "bg-[#12263F] text-white font-semibold"
@@ -165,7 +321,8 @@ export function InvoiceTable({
           <input
             type="search"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
             placeholder="Search invoice or client..."
             className="w-full pl-9 pr-3 py-2 rounded-xl border border-[#E3E8EF] text-xs focus:outline-hidden focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] bg-[#F6F5F1]/50 placeholder:text-[#8A9BA8]"
             aria-label="Search invoices"
@@ -262,13 +419,36 @@ export function InvoiceTable({
                 return (
                   <tr
                     key={inv.id}
-                    className="hover:bg-[#F6F5F1]/50 transition-colors group"
+                    tabIndex={0}
+                    role="row"
+                    aria-label={`Invoice ${inv.number ?? inv.id.slice(0, 10)} for ${inv.client.name}`}
+                    onClick={(e) => {
+                      const target = e.target as HTMLElement;
+                      const closestInteractive = target.closest("a, button, input, select, textarea");
+                      if (closestInteractive && closestInteractive !== e.currentTarget) {
+                        return;
+                      }
+                      router.push(`/invoices/${inv.id}`);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        const target = e.target as HTMLElement;
+                        const closestInteractive = target.closest("a, button, input, select, textarea");
+                        if (closestInteractive && closestInteractive !== e.currentTarget) {
+                          return;
+                        }
+                        e.preventDefault();
+                        router.push(`/invoices/${inv.id}`);
+                      }
+                    }}
+                    className="cursor-pointer hover:bg-[#F6F5F1] focus:outline-none focus-visible:bg-[#EEF2F6] focus-visible:ring-1 focus-visible:ring-[#0C7C61] transition-colors group"
                   >
                     {/* Invoice ID / Number */}
                     <td className="py-3.5 px-4 sm:px-6 font-mono font-semibold text-[#12263F]">
                       <Link
                         href={`/invoices/${inv.id}`}
-                        className="hover:text-[#0C7C61] hover:underline"
+                        onClick={(e) => e.stopPropagation()}
+                        className="hover:text-[#0C7C61] hover:underline focus:outline-none focus-visible:underline"
                       >
                         {inv.number ?? inv.id.slice(0, 10)}
                       </Link>
@@ -315,7 +495,8 @@ export function InvoiceTable({
                     <td className="py-3.5 px-4 sm:px-6 text-right">
                       <Link
                         href={`/invoices/${inv.id}`}
-                        className="inline-flex items-center gap-1 text-[#0C7C61] hover:underline font-medium text-xs touch-target"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 text-[#0C7C61] hover:underline font-medium text-xs touch-target focus:outline-none focus-visible:underline"
                       >
                         <span>View</span>
                         <ArrowRight className="w-3.5 h-3.5" />

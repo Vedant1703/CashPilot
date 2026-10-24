@@ -15,7 +15,10 @@ export const metadata: Metadata = {
 
 interface InvoicesPageProps {
   searchParams?: Promise<{
+    status?: string;
     filter?: string;
+    q?: string;
+    search?: string;
   }>;
 }
 
@@ -40,15 +43,18 @@ async function InvoicesContent({ searchParams }: InvoicesPageProps) {
 
   const { workspace, invoices, lastSyncAt, hasStaleInvoices } = result.data;
 
-  // Map query-string filter param to InvoiceTable initialFilter
+  // Map query-string status/filter param to InvoiceTable initialFilter
   let initialFilter = "ALL";
-  const filterParam = params?.filter?.toUpperCase();
-  if (filterParam === "DRAFT") initialFilter = "DRAFT";
-  else if (filterParam === "AWAITING") initialFilter = "AWAITING_PAYMENT";
-  else if (filterParam === "DUE_SOON") initialFilter = "DUE_SOON";
-  else if (filterParam === "OVERDUE") initialFilter = "OVERDUE";
-  else if (filterParam === "PAID") initialFilter = "PAID";
-  else if (filterParam === "NEEDS_REVIEW") initialFilter = "NEEDS_REVIEW";
+  const rawStatus = (params?.status || params?.filter || "").toLowerCase().trim();
+  if (rawStatus === "draft") initialFilter = "DRAFT";
+  else if (rawStatus === "unpaid" || rawStatus === "awaiting" || rawStatus === "awaiting_payment") initialFilter = "AWAITING_PAYMENT";
+  else if (rawStatus === "due_soon" || rawStatus === "duesoon") initialFilter = "DUE_SOON";
+  else if (rawStatus === "overdue") initialFilter = "OVERDUE";
+  else if (rawStatus === "paid") initialFilter = "PAID";
+  else if (rawStatus === "needs_review" || rawStatus === "needsreview") initialFilter = "NEEDS_REVIEW";
+  else initialFilter = "ALL";
+
+  const initialSearch = (params?.q || params?.search || "").trim();
 
   return (
     <>
@@ -93,7 +99,11 @@ async function InvoicesContent({ searchParams }: InvoicesPageProps) {
         </div>
 
         {/* Invoice Directory Table */}
-        <InvoiceTable invoices={invoices} initialFilter={initialFilter} />
+        <InvoiceTable
+          invoices={invoices}
+          initialFilter={initialFilter}
+          initialSearch={initialSearch}
+        />
       </main>
     </>
   );
