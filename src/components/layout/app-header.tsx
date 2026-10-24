@@ -20,13 +20,13 @@ function HeaderNavLinks() {
     { href: "/", label: "Dashboard", active: pathname === "/" },
     {
       href: "/collections",
-      label: "Collections Board",
-      active: pathname === "/collections" && !pathname.includes("view=table"),
+      label: "Collections",
+      active: pathname.startsWith("/collections"),
     },
     {
-      href: "/collections?view=table",
-      label: "Invoices Table",
-      active: pathname.includes("view=table"),
+      href: "/invoices",
+      label: "Invoices",
+      active: pathname.startsWith("/invoices"),
     },
   ];
 
@@ -57,10 +57,10 @@ function HeaderNavFallback() {
         Dashboard
       </Link>
       <Link href="/collections" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
-        Collections Board
+        Collections
       </Link>
-      <Link href="/collections?view=table" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
-        Invoices Table
+      <Link href="/invoices" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
+        Invoices
       </Link>
     </nav>
   );
@@ -176,14 +176,14 @@ export function AppHeader({
             onClick={() => setMobileMenuOpen(false)}
             className="block px-3 py-2.5 rounded-xl text-sm font-medium text-[#12263F] hover:bg-[#F6F5F1]"
           >
-            Collections Board
+            Collections
           </Link>
           <Link
-            href="/collections?view=table"
+            href="/invoices"
             onClick={() => setMobileMenuOpen(false)}
             className="block px-3 py-2.5 rounded-xl text-sm font-medium text-[#12263F] hover:bg-[#F6F5F1]"
           >
-            Invoices Table
+            Invoices
           </Link>
           <div className="pt-2 border-t border-[#E3E8EF]">
             <button

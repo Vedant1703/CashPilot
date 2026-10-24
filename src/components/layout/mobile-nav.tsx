@@ -12,15 +12,15 @@ function MobileNavTabs() {
     { href: "/", label: "Home", icon: Home, active: pathname === "/" },
     {
       href: "/collections",
-      label: "Board",
+      label: "Collections",
       icon: Kanban,
-      active: pathname === "/collections" && !pathname.includes("view=table"),
+      active: pathname.startsWith("/collections"),
     },
     {
-      href: "/collections?view=table",
+      href: "/invoices",
       label: "Invoices",
       icon: FileText,
-      active: pathname.includes("view=table"),
+      active: pathname.startsWith("/invoices"),
     },
     {
       href: "#activity",

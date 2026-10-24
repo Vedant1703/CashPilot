@@ -3,23 +3,11 @@ import Link from "next/link";
 import { AppHeader } from "@/components/layout/app-header";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { KanbanBoard } from "@/components/collections/kanban-board";
-import { InvoiceTable } from "@/components/collections/invoice-table";
 import { CollectionsSkeleton } from "@/components/collections/collections-skeleton";
 import { getDashboardData } from "@/lib/services/dashboard.service";
-import { Kanban, List, Plus, AlertCircle, ArrowLeft } from "lucide-react";
+import { Plus, AlertCircle, ArrowLeft } from "lucide-react";
 
-interface CollectionsContentProps {
-  searchParams?: Promise<{
-    view?: string;
-    stage?: string;
-  }>;
-}
-
-async function CollectionsContent({ searchParams }: CollectionsContentProps) {
-  const params = await searchParams;
-  const isTableView = params?.view === "table";
-  const selectedStage = params?.stage?.toUpperCase();
-
+async function CollectionsContent() {
   const result = await getDashboardData("demo-workspace-1", "demo-user-1");
 
   if (!result.ok) {
@@ -37,15 +25,7 @@ async function CollectionsContent({ searchParams }: CollectionsContentProps) {
     );
   }
 
-  const { workspace, invoices, collections, lastSyncAt, hasStaleInvoices } = result.data;
-
-  // Initial table filter mapping if stage is supplied in query string
-  let initialTableFilter = "ALL";
-  if (selectedStage === "OVERDUE") initialTableFilter = "OVERDUE";
-  else if (selectedStage === "DUE_SOON") initialTableFilter = "DUE_SOON";
-  else if (selectedStage === "AWAITING") initialTableFilter = "AWAITING_PAYMENT";
-  else if (selectedStage === "PAID") initialTableFilter = "PAID";
-  else if (selectedStage === "DRAFT") initialTableFilter = "DRAFT";
+  const { workspace, collections, lastSyncAt, hasStaleInvoices } = result.data;
 
   return (
     <>
@@ -57,7 +37,7 @@ async function CollectionsContent({ searchParams }: CollectionsContentProps) {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
-        {/* Page Header & View Toggle */}
+        {/* Page Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 mb-1">
@@ -80,59 +60,17 @@ async function CollectionsContent({ searchParams }: CollectionsContentProps) {
             </p>
           </div>
 
-          {/* View Mode Toggle & New Invoice CTA */}
-          <div className="flex items-center gap-3">
-            <div
-              className="inline-flex items-center p-1 rounded-xl bg-white border border-[#E3E8EF] shadow-xs"
-              role="group"
-              aria-label="View Mode"
-            >
-              <Link
-                href="/collections"
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  !isTableView
-                    ? "bg-[#12263F] text-white font-semibold"
-                    : "text-[#5E718D] hover:text-[#12263F]"
-                }`}
-                aria-current={!isTableView ? "true" : undefined}
-              >
-                <Kanban className="w-3.5 h-3.5" />
-                <span>Board</span>
-              </Link>
-
-              <Link
-                href="/collections?view=table"
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  isTableView
-                    ? "bg-[#12263F] text-white font-semibold"
-                    : "text-[#5E718D] hover:text-[#12263F]"
-                }`}
-                aria-current={isTableView ? "true" : undefined}
-              >
-                <List className="w-3.5 h-3.5" />
-                <span>Table</span>
-              </Link>
-            </div>
-
-            <Link
-              href="/invoices/new"
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0C7C61] hover:bg-[#096851] text-white text-xs font-semibold shadow-xs transition-colors touch-target"
-            >
-              <Plus className="w-4 h-4 stroke-[2.5]" />
-              <span>New invoice</span>
-            </Link>
-          </div>
+          <Link
+            href="/invoices/new"
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0C7C61] hover:bg-[#096851] text-white text-xs font-semibold shadow-xs transition-colors touch-target self-start sm:self-auto"
+          >
+            <Plus className="w-4 h-4 stroke-[2.5]" />
+            <span>New invoice</span>
+          </Link>
         </div>
 
-        {/* View Content: Kanban Board vs Table */}
-        {isTableView ? (
-          <InvoiceTable
-            invoices={invoices}
-            initialFilter={initialTableFilter}
-          />
-        ) : (
-          <KanbanBoard collections={collections} />
-        )}
+        {/* Collections Kanban Board */}
+        <KanbanBoard collections={collections} />
       </main>
     </>
   );
@@ -149,11 +87,11 @@ function CollectionsLoadingShell() {
   );
 }
 
-export default function CollectionsPage(props: CollectionsContentProps) {
+export default function CollectionsPage() {
   return (
     <div className="min-h-screen flex flex-col bg-[#F6F5F1] text-[#12263F] pb-16 md:pb-8">
       <Suspense fallback={<CollectionsLoadingShell />}>
-        <CollectionsContent {...props} />
+        <CollectionsContent />
       </Suspense>
 
       {/* Mobile Bottom Navigation Bar */}
