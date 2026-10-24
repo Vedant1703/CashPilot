@@ -5,7 +5,8 @@ import { test, expect } from "@playwright/test";
 import { setupRemindCancelTestInvoice, cleanupE2EInvoices, E2E_REMIND_CANCEL_INVOICE_ID } from "./fixtures";
 
 test.describe("Ask Navi Guided Chatbot & Navigation", () => {
-  test("renders Ask Navi in desktop navigation and navigates to /navi-ai", async ({ page }) => {
+  test("renders Ask Navi in desktop navigation and navigates to /navi-ai", async ({ page, isMobile }) => {
+    test.skip(isMobile, "Desktop navigation is only rendered on desktop viewports");
     await page.goto("/");
 
     // Check desktop nav has Ask Navi link
