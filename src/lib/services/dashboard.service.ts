@@ -50,8 +50,8 @@ export interface DashboardDataResult {
  * Fetches dashboard and collections data server-side for the target workspace.
  */
 export async function getDashboardData(
-  workspaceId: string = "demo-workspace-1",
-  actorId: string = "demo-user-1"
+  workspaceId: string,
+  actorId: string
 ): Promise<{ ok: true; data: DashboardDataResult } | { ok: false; error: string; status: number }> {
   // 1. Authorize workspace access
   const workspace = await db.workspace.findUnique({

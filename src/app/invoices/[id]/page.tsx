@@ -5,6 +5,7 @@ import { AppHeader } from "@/components/layout/app-header";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { InvoiceDetailView, SerializedInvoiceDetail } from "@/components/invoices/invoice-detail-view";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
+import { requireAuth } from "@/lib/auth/server-session";
 import { OperationType, OperationAttemptState } from "@prisma/client";
 
 /**
@@ -15,9 +16,6 @@ import { OperationType, OperationAttemptState } from "@prisma/client";
  *
  * Consequential financial actions (such as SEND_INVOICE) require explicit human approval
  * bound to the exact server-calculated material payload hash.
- *
- * MVP Authentication Limitation:
- * CashPilot uses workspace-scoped sessions for Sandbox verification. Production requires OAuth 2.0 / JWT session auth.
  */
 
 interface InvoiceDetailPageProps {
@@ -40,6 +38,7 @@ async function findRecentReminder(invoiceId: string, workspaceId: string) {
 }
 
 async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
+  const session = await requireAuth();
   const { id } = await params;
 
   if (!id || typeof id !== "string" || id.trim().length === 0) {
@@ -56,7 +55,7 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     },
   });
 
-  if (!invoice) {
+  if (!invoice || invoice.workspace.ownerId !== session.user.id) {
     return notFound();
   }
 
@@ -159,6 +158,7 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
       <AppHeader
         workspaceName={invoice.workspace.name}
         isDemo={invoice.workspace.isDemo}
+        user={session.user}
         lastSyncAt={serializedInvoice.lastSyncAt}
         hasStaleInvoices={invoice.syncIsStale}
       />

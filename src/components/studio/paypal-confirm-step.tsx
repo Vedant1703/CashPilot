@@ -121,7 +121,7 @@ export function PayPalConfirmStep({
               <div className="rounded-xl bg-white border border-[#E3E8EF] p-4 text-xs space-y-2.5 shadow-2xs">
                 <div className="flex items-center justify-between text-[#5E718D] pb-1 border-b border-[#EEF2F6]">
                   <span className="font-medium">CashPilot Workspace</span>
-                  <span className="font-mono text-[11px] text-[#5E718D]">{persistedInvoice.workspaceId ?? "demo-workspace-1"}</span>
+                  <span className="font-mono text-[11px] text-[#5E718D]">{persistedInvoice.workspaceId ?? "—"}</span>
                 </div>
 
                 <div className="flex items-center justify-between py-1 border-b border-[#EEF2F6]">

@@ -6,6 +6,7 @@ import { MobileNav } from "@/components/layout/mobile-nav";
 import { InvoiceTable } from "@/components/collections/invoice-table";
 import { CollectionsSkeleton } from "@/components/collections/collections-skeleton";
 import { getDashboardData } from "@/lib/services/dashboard.service";
+import { requireAuth } from "@/lib/auth/server-session";
 import { Plus, AlertCircle, ArrowLeft } from "lucide-react";
 
 export const metadata: Metadata = {
@@ -23,13 +24,18 @@ interface InvoicesPageProps {
 }
 
 async function InvoicesContent({ searchParams }: InvoicesPageProps) {
+  const session = await requireAuth();
   const params = await searchParams;
-  const result = await getDashboardData("demo-workspace-1", "demo-user-1");
+  const result = await getDashboardData(session.workspace.id, session.user.id);
 
   if (!result.ok) {
     return (
       <>
-        <AppHeader />
+        <AppHeader
+          workspaceName={session.workspace.name}
+          isDemo={session.workspace.isDemo}
+          user={session.user}
+        />
         <main className="flex-1 max-w-4xl mx-auto px-4 py-16 flex flex-col items-center justify-center text-center">
           <div className="p-5 rounded-2xl bg-[#FEF3F2] border border-[#FECDCA] text-[#B42318] max-w-md">
             <AlertCircle className="w-8 h-8 mx-auto mb-2" />
@@ -61,6 +67,7 @@ async function InvoicesContent({ searchParams }: InvoicesPageProps) {
       <AppHeader
         workspaceName={workspace.name}
         isDemo={workspace.isDemo}
+        user={session.user}
         lastSyncAt={lastSyncAt}
         hasStaleInvoices={hasStaleInvoices}
       />

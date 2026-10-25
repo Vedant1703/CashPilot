@@ -202,7 +202,7 @@ export async function revokeSession(token: string | null | undefined): Promise<b
   }
 
   const tokenHash = hashSessionToken(token.trim());
-  testSessionStore.delete(tokenHash);
+  const hadInMemory = testSessionStore.delete(tokenHash);
 
   try {
     await db.session.deleteMany({
@@ -210,7 +210,7 @@ export async function revokeSession(token: string | null | undefined): Promise<b
     });
     return true;
   } catch {
-    return false;
+    return hadInMemory;
   }
 }
 

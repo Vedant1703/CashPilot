@@ -7,7 +7,9 @@
  */
 
 import { NextRequest } from "next/server";
-import { registerTestSession, SESSION_COOKIE_NAME, SessionContext } from "@/lib/auth/session";
+import { registerTestSession, clearTestSessions, SESSION_COOKIE_NAME, SessionContext } from "@/lib/auth/session";
+
+export { clearTestSessions };
 
 export interface TestSessionOptions {
   actorId?: string;

@@ -2,15 +2,19 @@
 
 import React, { Suspense, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { CashPilotLogo } from "@/components/brand/cashpilot-logo";
-import { RefreshCw, Plus, Menu, X, ShieldAlert } from "lucide-react";
+import { RefreshCw, Plus, Menu, X, ShieldAlert, LogOut } from "lucide-react";
 
 interface AppHeaderProps {
   lastSyncAt?: string | null;
   hasStaleInvoices?: boolean;
   workspaceName?: string;
   isDemo?: boolean;
+  user?: {
+    name: string;
+    email: string;
+  } | null;
 }
 
 function HeaderNavLinks() {
@@ -79,13 +83,27 @@ export function AppHeader({
   hasStaleInvoices = false,
   workspaceName = "My Freelance Studio",
   isDemo = true,
+  user,
 }: AppHeaderProps) {
+  const router = useRouter();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
     window.location.reload();
+  };
+
+  const handleLogout = async () => {
+    if (isLoggingOut) return;
+    setIsLoggingOut(true);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      router.push("/login");
+      router.refresh();
+    }
   };
 
   return (
@@ -156,6 +174,30 @@ export function AppHeader({
             <span>New invoice</span>
           </Link>
 
+          {/* User profile & logout (Desktop) */}
+          {user && (
+            <div className="hidden lg:flex items-center gap-2 pl-2 border-l border-[#E3E8EF]">
+              <div className="flex flex-col text-right">
+                <span className="text-xs font-semibold text-[#12263F] leading-tight truncate max-w-[120px]">
+                  {user.name}
+                </span>
+                <span className="text-[10px] text-[#5E718D] leading-tight truncate max-w-[120px]">
+                  {user.email}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleLogout}
+                disabled={isLoggingOut}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-[#E3E8EF] hover:bg-[#FEF3F2] hover:border-[#FECDCA] hover:text-[#B42318] text-[#5E718D] text-xs font-medium transition-colors"
+                title="Sign out of CashPilot"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>{isLoggingOut ? "..." : "Sign out"}</span>
+              </button>
+            </div>
+          )}
+
           {/* Mobile hamburger button */}
           <button
             type="button"
@@ -200,7 +242,15 @@ export function AppHeader({
           >
             Ask Navi
           </Link>
-          <div className="pt-2 border-t border-[#E3E8EF]">
+
+          {user && (
+            <div className="px-3 py-2 bg-[#F6F5F1] rounded-xl my-2">
+              <div className="text-xs font-semibold text-[#12263F]">{user.name}</div>
+              <div className="text-[11px] text-[#5E718D] truncate">{user.email}</div>
+            </div>
+          )}
+
+          <div className="pt-2 border-t border-[#E3E8EF] space-y-2">
             <button
               type="button"
               onClick={handleRefresh}
@@ -209,6 +259,18 @@ export function AppHeader({
               <RefreshCw className="w-3.5 h-3.5 text-[#5E718D]" />
               <span>Refresh Status</span>
             </button>
+
+            {user && (
+              <button
+                type="button"
+                onClick={handleLogout}
+                disabled={isLoggingOut}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-[#FECDCA] text-[#B42318] bg-[#FEF3F2] text-xs font-semibold"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>{isLoggingOut ? "Signing out..." : "Sign Out"}</span>
+              </button>
+            )}
           </div>
         </div>
       )}

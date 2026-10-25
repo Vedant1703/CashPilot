@@ -4,6 +4,7 @@ import { AppHeader } from "@/components/layout/app-header";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { AskNaviClient } from "@/components/navi/ask-navi-client";
 import { getDashboardData } from "@/lib/services/dashboard.service";
+import { requireAuth } from "@/lib/auth/server-session";
 import { formatMoney } from "@/lib/money";
 import { CashPilotStatus } from "@prisma/client";
 import { AlertCircle, RefreshCw } from "lucide-react";
@@ -18,7 +19,8 @@ export const metadata: Metadata = {
 };
 
 async function AskNaviContent() {
-  const result = await getDashboardData("demo-workspace-1", "demo-user-1");
+  const session = await requireAuth();
+  const result = await getDashboardData(session.workspace.id, session.user.id);
 
   if (!result.ok) {
     return (
@@ -120,6 +122,7 @@ async function AskNaviContent() {
       <AppHeader
         workspaceName={workspace.name}
         isDemo={workspace.isDemo}
+        user={session.user}
         lastSyncAt={lastSyncAt}
         hasStaleInvoices={hasStaleInvoices}
       />
