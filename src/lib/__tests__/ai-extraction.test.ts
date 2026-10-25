@@ -236,4 +236,88 @@ describe("AI Invoice Extraction & Governance", () => {
       expect(json.data.aiDraftId).toBeDefined();
     });
   });
+
+  describe("Regression Suite: Flexible NLP Extraction & Safe Matching", () => {
+    const clients = [
+      { id: "c-1", name: "TechStart Inc", email: "billing@techstart.io", company: "TechStart Inc" },
+      { id: "c-2", name: "Acme Corporation", email: "finance@acme.com", company: "Acme Corp" },
+      { id: "c-3", name: "Global Media LLC", email: "ap@globalmedia.com", company: "Global Media" },
+    ];
+
+    it("parses comma-formatted amounts correctly without truncation ($1,250, $2,500.50)", () => {
+      const prompt1 = "Bill TechStart $1,250 for frontend overhaul";
+      const res1 = extractInvoiceDeterministically(prompt1, clients);
+      expect(res1.draft.lineItems?.[0].unitPriceDecimal).toBe("1250.00");
+      expect(res1.draft.lineItems?.[0].description).toBe("Frontend overhaul");
+
+      const prompt2 = "Invoice Acme Corp $2,500.50 for Q3 security review";
+      const res2 = extractInvoiceDeterministically(prompt2, clients);
+      expect(res2.draft.lineItems?.[0].unitPriceDecimal).toBe("2500.50");
+      expect(res2.draft.lineItems?.[0].description).toBe("Q3 security review");
+    });
+
+    it("matches client with company suffix variations (TechStart -> TechStart Inc)", () => {
+      const prompt = "Bill TechStart $500 for api design";
+      const res = extractInvoiceDeterministically(prompt, clients);
+
+      expect(res.matchedClient).toBeDefined();
+      expect(res.matchedClient?.id).toBe("c-1");
+      expect(res.matchedClient?.name).toBe("TechStart Inc");
+      expect(res.draft.recipientEmail).toBe("billing@techstart.io");
+    });
+
+    it("does not select a client when multiple clients match ambiguously", () => {
+      const ambiguousClients = [
+        { id: "ts-1", name: "TechStart Inc", email: "billing@techstart.io" },
+        { id: "ts-2", name: "TechStart Labs", email: "billing@techstartlabs.io" },
+      ];
+
+      const prompt = "Bill TechStart $1,250 for sprint 3 frontend development";
+      const res = extractInvoiceDeterministically(prompt, ambiguousClients);
+
+      // Must NOT guess or default to the first client
+      expect(res.matchedClient).toBeNull();
+      expect(res.isAmbiguousClient).toBe(true);
+      expect(res.missingFields).toContain("client");
+    });
+
+    it("extracts acceptance scenario prompt accurately", () => {
+      const prompt =
+        "Bill TechStart $1,250 for sprint 3 frontend development, 10% tax, due Nov 4, 2026";
+      const res = extractInvoiceDeterministically(prompt, clients);
+
+      expect(res.matchedClient).toBeDefined();
+      expect(res.matchedClient?.name).toBe("TechStart Inc");
+      expect(res.matchedClient?.email).toBe("billing@techstart.io");
+      expect(res.draft.lineItems?.[0].description).toBe("Sprint 3 frontend development");
+      expect(res.draft.lineItems?.[0].quantity).toBe(1);
+      expect(res.draft.lineItems?.[0].unitPriceDecimal).toBe("1250.00");
+      expect(res.draft.taxRatePercent).toBe(10);
+      expect(res.draft.dueDate).toBe("2026-11-04");
+      expect(res.missingFields).not.toContain("client");
+      expect(res.missingFields).not.toContain("dueDate");
+    });
+
+    it("extracts hourly rate and quantity with varied phrasing", () => {
+      const prompt = "Invoice Global Media for 15 hours of cloud migration consulting at $175/hr";
+      const res = extractInvoiceDeterministically(prompt, clients);
+
+      expect(res.matchedClient?.id).toBe("c-3");
+      expect(res.draft.lineItems?.[0].quantity).toBe(15);
+      expect(res.draft.lineItems?.[0].unitPriceDecimal).toBe("175.00");
+      expect(res.draft.lineItems?.[0].description).toBe("Cloud migration consulting");
+    });
+
+    it("flags missing fields without inventing defaults when prompt lacks info", () => {
+      const prompt = "Please prepare an invoice for $400";
+      const res = extractInvoiceDeterministically(prompt, clients);
+
+      expect(res.matchedClient).toBeNull();
+      expect(res.draft.recipientEmail).toBeUndefined();
+      expect(res.draft.dueDate).toBeUndefined();
+      expect(res.missingFields).toContain("client");
+      expect(res.missingFields).toContain("recipientEmail");
+      expect(res.missingFields).toContain("dueDate");
+    });
+  });
 });

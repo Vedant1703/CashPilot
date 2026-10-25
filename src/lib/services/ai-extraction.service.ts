@@ -37,6 +37,115 @@ export interface ExtractionResult {
 
 /**
  * Deterministic pattern extraction engine.
+/**
+ * Unambiguously matches a client candidate name or prompt text against known workspace clients.
+ * Normalizes common corporate suffixes (Inc, LLC, Corp, etc.) for flexible matching.
+ * Returns null if no match or if multiple matches exist (ambiguous match).
+ */
+export function matchClientAgainstKnown(
+  candidateName: string | undefined,
+  rawText: string,
+  knownClients: Array<{ id: string; name: string; email: string; company?: string | null }> = []
+): { matchedClient: (typeof knownClients)[0] | null; isAmbiguous: boolean } {
+  if (!knownClients || knownClients.length === 0) {
+    return { matchedClient: null, isAmbiguous: false };
+  }
+
+  const normalize = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+      .replace(/\b(inc|corporation|corp|llc|co|company|ltd|associates)\b/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const text = rawText.toLowerCase();
+
+  // 1. If candidateName is provided, evaluate it first
+  if (candidateName && candidateName.trim().length > 0) {
+    const cand = candidateName.trim().toLowerCase();
+    const candNorm = normalize(cand);
+
+    // Direct match against candidateName
+    const directMatches = knownClients.filter((c) => {
+      const cName = c.name.toLowerCase();
+      const cComp = (c.company || "").toLowerCase();
+      return (
+        cName === cand ||
+        cComp === cand ||
+        cName.includes(cand) ||
+        cComp.includes(cand) ||
+        cand.includes(cName) ||
+        (cComp && cand.includes(cComp))
+      );
+    });
+
+    if (directMatches.length === 1) {
+      return { matchedClient: directMatches[0], isAmbiguous: false };
+    }
+    if (directMatches.length > 1) {
+      return { matchedClient: null, isAmbiguous: true };
+    }
+
+    // Base name match (ignoring Inc, Corp, etc.)
+    if (candNorm.length >= 3) {
+      const baseMatches = knownClients.filter((c) => {
+        const bName = normalize(c.name);
+        const bComp = c.company ? normalize(c.company) : "";
+        return (
+          bName === candNorm ||
+          bComp === candNorm ||
+          (bName.length >= 3 && bName.includes(candNorm)) ||
+          (bComp.length >= 3 && bComp.includes(candNorm)) ||
+          (candNorm.length >= 3 && candNorm.includes(bName)) ||
+          (bComp.length >= 3 && candNorm.includes(bComp))
+        );
+      });
+
+      if (baseMatches.length === 1) {
+        return { matchedClient: baseMatches[0], isAmbiguous: false };
+      }
+      if (baseMatches.length > 1) {
+        return { matchedClient: null, isAmbiguous: true };
+      }
+    }
+  }
+
+  // 2. Search rawText directly against knownClients
+  const directTextMatches = knownClients.filter((c) => {
+    const cName = c.name.toLowerCase();
+    const cComp = (c.company || "").toLowerCase();
+    return text.includes(cName) || (cComp && text.includes(cComp));
+  });
+
+  if (directTextMatches.length === 1) {
+    return { matchedClient: directTextMatches[0], isAmbiguous: false };
+  }
+  if (directTextMatches.length > 1) {
+    return { matchedClient: null, isAmbiguous: true };
+  }
+
+  const baseTextMatches = knownClients.filter((c) => {
+    const bName = normalize(c.name);
+    const bComp = c.company ? normalize(c.company) : "";
+    return (
+      (bName.length >= 3 && text.includes(bName)) ||
+      (bComp.length >= 3 && text.includes(bComp))
+    );
+  });
+
+  if (baseTextMatches.length === 1) {
+    return { matchedClient: baseTextMatches[0], isAmbiguous: false };
+  }
+  if (baseTextMatches.length > 1) {
+    return { matchedClient: null, isAmbiguous: true };
+  }
+
+  return { matchedClient: null, isAmbiguous: false };
+}
+
+/**
+ * Deterministic pattern-based invoice extraction engine.
  * Used when AI_API_KEY is not configured or as safe fallback.
  * Accurately parses standard client names, hourly/fixed rates, quantities, and due dates.
  */
@@ -47,30 +156,23 @@ export function extractInvoiceDeterministically(
   draft: AiInvoiceDraft;
   matchedClient: (typeof knownClients)[0] | null;
   missingFields: string[];
+  isAmbiguousClient: boolean;
 } {
   const missingFields: string[] = [];
   const text = inputText.toLowerCase();
 
-  // 1. Client matching (first against known clients, then regex extraction from text)
-  let matchedClient: (typeof knownClients)[0] | null = null;
-  for (const client of knownClients) {
-    const cName = client.name.toLowerCase();
-    const cCompany = client.company?.toLowerCase() ?? "";
-    if (text.includes(cName) || (cCompany && text.includes(cCompany))) {
-      matchedClient = client;
-      break;
-    }
-  }
+  // 1. Client matching against known clients
+  const clientMatch = inputText.match(
+    /(?:create an invoice for|invoice for|bill to|bill|invoice)\s+([A-Z][A-Za-z0-9\s&.'-]+?)(?:\s+(?:for|dated|with|\$|net)|,|$)/i
+  );
+  const candidateRaw = clientMatch ? clientMatch[1].trim() : undefined;
 
-  let clientName = matchedClient?.name;
-  if (!clientName) {
-    const clientMatch = inputText.match(/(?:create an invoice for|invoice for|bill to|bill|invoice)\s+([A-Z][A-Za-z0-9\s&.'-]+?)(?:\s+(?:for|dated|with|\$|net)|,|$)/i);
-    if (clientMatch) {
-      clientName = clientMatch[1].trim();
-    }
-  }
+  const matchResult = matchClientAgainstKnown(candidateRaw, inputText, knownClients);
+  const matchedClient = matchResult.matchedClient;
+  const isAmbiguousClient = matchResult.isAmbiguous;
 
-  if (!clientName) {
+  const clientName = matchedClient?.name || candidateRaw;
+  if (!matchedClient) {
     missingFields.push("client");
   }
 
@@ -85,43 +187,92 @@ export function extractInvoiceDeterministically(
     }
   }
 
-  // 2. Line Items, Quantities & Rates
+  // 2. Line Items, Quantities & Rates (Support comma amounts like $1,250 and flexible phrasing)
   const lineItems: Array<{
     description: string;
     quantity: number;
     unitPriceDecimal: string;
   }> = [];
 
-  // Pattern 1: "X hours ... at $Y / for $Y"
-  const hourlyMatch = inputText.match(/(\d+)\s*(?:hours|hrs)\s*(?:of\s*)?([^,.]+?)\s*(?:at|@)\s*\$?(\d+(?:\.\d{1,2})?)/i);
-  // Pattern 2: "for $Y ... retainer/package/consulting"
-  const fixedMatch = inputText.match(/(?:for|bill\s+[^$]+?)\s*\$?(\d+(?:\.\d{1,2})?)\s*(?:for\s+)?([^,.]+)/i);
+  const priceRegexStr = "\\$?(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)";
+
+  // Pattern 1: Hourly / Quantity: "10 hours of system design consulting at $150 per hour" or "5 units at $20 each"
+  const hourlyMatch = inputText.match(
+    new RegExp(
+      "(\\d+)\\s*(?:hours|hrs|items|units|licenses|x)?\\s*(?:of\\s*)?([^,.]+?)\\s*(?:at|@)\\s*" +
+        priceRegexStr +
+        "(?:\\s*(?:\\/|per|each|a)\\s*(?:hour|hr|item|unit|license))?",
+      "i"
+    )
+  );
+
+  // Pattern 2: "Bill TechStart $1,250 for sprint 3 frontend development" or "$1,250 for sprint 3 frontend development"
+  const fixedMatch = inputText.match(
+    new RegExp(
+      "(?:for\\s+|bill\\s+[^$]+?\\s+)?" + priceRegexStr + "\\s+(?:for|towards)\\s+([^,.]+)",
+      "i"
+    )
+  );
+
+  // Pattern 3: "Bill Jane for consulting at $500"
+  const billForAtMatch = inputText.match(
+    new RegExp(
+      "(?:bill|invoice|charge)\\s+[^$]+?\\s+for\\s+([^,.]+?)\\s+(?:at|@)\\s*" + priceRegexStr,
+      "i"
+    )
+  );
+
+  // Pattern 4: "for consulting at $500"
+  const forAtMatch = inputText.match(
+    new RegExp("(?:for\\s+)([^,.]+?)\\s+(?:at|@)\\s*" + priceRegexStr, "i")
+  );
 
   if (hourlyMatch) {
     const qty = parseInt(hourlyMatch[1], 10);
     const desc = hourlyMatch[2].trim() || "Consulting Services";
-    const price = parseFloat(hourlyMatch[3]).toFixed(2);
+    const cleanPrice = hourlyMatch[3].replace(/,/g, "");
+    const price = parseFloat(cleanPrice).toFixed(2);
     lineItems.push({
       description: desc.charAt(0).toUpperCase() + desc.slice(1),
       quantity: Math.max(qty, 1),
       unitPriceDecimal: price,
     });
-  } else if (fixedMatch) {
-    const price = parseFloat(fixedMatch[1]).toFixed(2);
-    const desc = fixedMatch[2].trim() || "Professional Services";
+  } else if (fixedMatch && fixedMatch[2]?.trim()) {
+    const cleanPrice = fixedMatch[1].replace(/,/g, "");
+    const price = parseFloat(cleanPrice).toFixed(2);
+    const desc = fixedMatch[2].trim();
+    lineItems.push({
+      description: desc.charAt(0).toUpperCase() + desc.slice(1),
+      quantity: 1,
+      unitPriceDecimal: price,
+    });
+  } else if (billForAtMatch && billForAtMatch[1]?.trim()) {
+    const cleanPrice = billForAtMatch[2].replace(/,/g, "");
+    const price = parseFloat(cleanPrice).toFixed(2);
+    const desc = billForAtMatch[1].trim();
+    lineItems.push({
+      description: desc.charAt(0).toUpperCase() + desc.slice(1),
+      quantity: 1,
+      unitPriceDecimal: price,
+    });
+  } else if (forAtMatch && forAtMatch[1]?.trim()) {
+    const cleanPrice = forAtMatch[2].replace(/,/g, "");
+    const price = parseFloat(cleanPrice).toFixed(2);
+    const desc = forAtMatch[1].trim();
     lineItems.push({
       description: desc.charAt(0).toUpperCase() + desc.slice(1),
       quantity: 1,
       unitPriceDecimal: price,
     });
   } else {
-    // Generic fallback line item
-    const priceMatch = inputText.match(/\$(\d+(?:\.\d{1,2})?)/);
+    // Generic fallback line item with standalone dollar amount
+    const priceMatch = inputText.match(/\$(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/);
     if (priceMatch) {
+      const cleanPrice = priceMatch[1].replace(/,/g, "");
       lineItems.push({
         description: "Professional Services",
         quantity: 1,
-        unitPriceDecimal: parseFloat(priceMatch[1]).toFixed(2),
+        unitPriceDecimal: parseFloat(cleanPrice).toFixed(2),
       });
     } else {
       missingFields.push("lineItems");
@@ -130,7 +281,10 @@ export function extractInvoiceDeterministically(
 
   // 3. Tax Rate
   let taxRatePercent: number | undefined;
-  const taxMatch = text.match(/(\d+(?:\.\d+)?)\s*%\s*tax/i) || text.match(/tax\s*(?:rate)?\s*(?:of)?\s*(\d+(?:\.\d+)?)\s*%/i);
+  const taxMatch =
+    text.match(/(\d+(?:\.\d+)?)\s*%\s*tax/i) ||
+    text.match(/tax\s*(?:rate)?\s*(?:of)?\s*(\d+(?:\.\d+)?)\s*%/i) ||
+    text.match(/with\s*(?:a\s*)?(\d+(?:\.\d+)?)\s*%\s*tax/i);
   if (taxMatch) {
     taxRatePercent = parseFloat(taxMatch[1]);
   }
@@ -148,13 +302,19 @@ export function extractInvoiceDeterministically(
     dueDate = d.toISOString().substring(0, 10);
     terms = `Net ${days} days`;
   } else {
-    // Check for explicit date like "due November 4, 2026" or "due 2026-11-04"
-    const explicitDate = text.match(/due\s+(?:on\s+)?([a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s*\d{4}|\d{4}-\d{2}-\d{2})/i);
+    // Check for explicit date like "due November 4, 2026", "due Nov 4, 2026", "due 2026-11-04", or "due Nov 4"
+    const explicitDate = text.match(
+      /due\s+(?:on\s+)?([a-z]+\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s*\d{4})?|\d{4}-\d{2}-\d{2})/i
+    );
     if (explicitDate) {
       if (/^\d{4}-\d{2}-\d{2}$/.test(explicitDate[1])) {
         dueDate = explicitDate[1];
       } else {
-        const parsed = Date.parse(explicitDate[1].replace(/(st|nd|rd|th)/, ""));
+        let rawDateStr = explicitDate[1].replace(/(st|nd|rd|th)/, "");
+        if (!/\d{4}/.test(rawDateStr)) {
+          rawDateStr += `, ${now.getFullYear()}`;
+        }
+        const parsed = Date.parse(rawDateStr);
         if (!isNaN(parsed)) {
           const d = new Date(parsed);
           const year = d.getFullYear();
@@ -177,6 +337,12 @@ export function extractInvoiceDeterministically(
     title = `${clientName} Services`;
   }
 
+  let notes = `Drafted from request: "${inputText.substring(0, 100)}${inputText.length > 100 ? "..." : ""}"`;
+  const noteMatch = inputText.match(/(?:note|memo|po\s*#?|po):\s*([^,.\n]+)/i);
+  if (noteMatch && noteMatch[1]?.trim()) {
+    notes = noteMatch[1].trim();
+  }
+
   const draft: AiInvoiceDraft = {
     clientName,
     recipientEmail,
@@ -186,7 +352,7 @@ export function extractInvoiceDeterministically(
     taxRatePercent,
     terms,
     lineItems: lineItems.length > 0 ? lineItems : undefined,
-    notes: `Drafted from request: "${inputText.substring(0, 100)}${inputText.length > 100 ? "..." : ""}"`,
+    notes,
     missingFields: missingFields.length > 0 ? missingFields : undefined,
     clarificationRequired: missingFields.length > 0,
   };
@@ -195,6 +361,7 @@ export function extractInvoiceDeterministically(
     draft,
     matchedClient,
     missingFields,
+    isAmbiguousClient,
   };
 }
 
@@ -237,6 +404,8 @@ Extract structured invoice data from the user request into valid JSON matching t
   "currency": "USD",
   "dueDate": "YYYY-MM-DD",
   "lineItems": [{ "description": string, "quantity": integer, "unitPriceDecimal": "0.00" }],
+  "taxRatePercent": number (optional, e.g. 10 for 10%),
+  "terms": string (optional),
   "notes": string,
   "missingFields": string[]
 }
@@ -287,9 +456,10 @@ Never guess missing email addresses or dates. If missing, add field name to miss
   }
 
   // 3. Fallback to deterministic extraction if AI was not used or failed
+  let detResult: ReturnType<typeof extractInvoiceDeterministically> | null = null;
   if (!rawOutput) {
-    const det = extractInvoiceDeterministically(inputText, knownClients);
-    rawOutput = det.draft as unknown as Record<string, unknown>;
+    detResult = extractInvoiceDeterministically(inputText, knownClients);
+    rawOutput = detResult.draft as unknown as Record<string, unknown>;
     source = "deterministic_rule_based";
     modelName = "deterministic-rule-engine-v1";
     explanation = "Extracted using CashPilot deterministic pattern engine (AI credentials not configured or offline).";
@@ -303,27 +473,34 @@ Never guess missing email addresses or dates. If missing, add field name to miss
     extractedDraft = parsed.data;
   } else {
     // If model returned invalid structure, fall back to deterministic parsing
-    const det = extractInvoiceDeterministically(inputText, knownClients);
-    extractedDraft = det.draft;
+    detResult = extractInvoiceDeterministically(inputText, knownClients);
+    extractedDraft = detResult.draft;
     source = "deterministic_rule_based";
     explanation = "AI output failed schema validation. Replaced with verified deterministic pattern extraction.";
   }
 
-  // 5. Match with known workspace client
-  let matchedClient: (typeof knownClients)[0] | null = null;
-  if (extractedDraft.clientName) {
-    const qName = extractedDraft.clientName.toLowerCase();
-    matchedClient =
-      knownClients.find(
-        (c) =>
-          c.name.toLowerCase() === qName ||
-          c.name.toLowerCase().includes(qName) ||
-          qName.includes(c.name.toLowerCase())
-      ) ?? null;
+  // 5. Match with known workspace client (unambiguous only)
+  let matchedClient: ExtractionResult["matchedClient"] = null;
+  let isAmbiguousClient = false;
+
+  if (detResult) {
+    matchedClient = detResult.matchedClient;
+    isAmbiguousClient = detResult.isAmbiguousClient;
+  } else {
+    const matchRes = matchClientAgainstKnown(
+      extractedDraft.clientName,
+      inputText,
+      knownClients
+    );
+    matchedClient = matchRes.matchedClient;
+    isAmbiguousClient = matchRes.isAmbiguous;
   }
 
-  if (matchedClient && !extractedDraft.recipientEmail) {
-    extractedDraft.recipientEmail = matchedClient.email;
+  if (matchedClient) {
+    extractedDraft.clientName = matchedClient.name;
+    if (!extractedDraft.recipientEmail) {
+      extractedDraft.recipientEmail = matchedClient.email;
+    }
   }
 
   // Calculate remaining missing fields
@@ -331,13 +508,18 @@ Never guess missing email addresses or dates. If missing, add field name to miss
   if (!extractedDraft.recipientEmail) missingFields.push("recipientEmail");
   if (!extractedDraft.dueDate) missingFields.push("dueDate");
   if (!extractedDraft.lineItems || extractedDraft.lineItems.length === 0) missingFields.push("lineItems");
-  if (!matchedClient && !extractedDraft.clientName) missingFields.push("client");
+  if (!matchedClient) missingFields.push("client");
 
   // Clarification notice
   let clarificationMessage: string | undefined;
-  if (missingFields.length > 0) {
+  if (isAmbiguousClient) {
+    clarificationMessage = `Attention: Multiple clients match "${extractedDraft.clientName || "the request"}". Please select the intended client before proceeding.`;
+  } else if (missingFields.length > 0) {
     clarificationMessage = `Attention: ${missingFields.join(", ")} needed. CashPilot will not guess missing financial facts.`;
   }
+
+  extractedDraft.missingFields = missingFields.length > 0 ? missingFields : undefined;
+  extractedDraft.clarificationRequired = missingFields.length > 0;
 
   // 6. Persist AiDraft record in database for traceability (SRS §4 & §6)
   const aiDraftRecord = await db.aiDraft.create({

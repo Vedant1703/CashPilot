@@ -1,3 +1,9 @@
+import path from "path";
+import dotenv from "dotenv";
+
+dotenv.config({ path: path.resolve(process.cwd(), ".env.local") });
+dotenv.config({ path: path.resolve(process.cwd(), ".env") });
+
 import { db } from "@/lib/db/client";
 import { CashPilotStatus, OperationType, OperationAttemptState } from "@prisma/client";
 
@@ -154,6 +160,15 @@ export async function setupRemindCancelTestInvoice(options: { withCooldown?: boo
   }
 
   return invoice;
+}
+
+export async function deleteInvoiceById(id: string) {
+  if (!id) return;
+  await db.activityEvent.deleteMany({ where: { invoiceId: id } }).catch(() => {});
+  await db.approval.deleteMany({ where: { invoiceId: id } }).catch(() => {});
+  await db.externalOperation.deleteMany({ where: { invoiceId: id } }).catch(() => {});
+  await db.invoiceLineItem.deleteMany({ where: { invoiceId: id } }).catch(() => {});
+  await db.invoice.deleteMany({ where: { id: id } }).catch(() => {});
 }
 
 export async function cleanupE2EInvoices() {

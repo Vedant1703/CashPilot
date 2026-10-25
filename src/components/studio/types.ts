@@ -47,7 +47,29 @@ export interface ExtractionResponseData {
   aiDraftId: string;
   source: "ai_model" | "deterministic_rule_based";
   modelName: string;
-  extractedFields: {
+  extractedDraft?: {
+    clientName?: string;
+    clientReference?: string;
+    clientId?: string;
+    recipientEmail?: string;
+    title?: string;
+    currency?: string;
+    invoiceDate?: string;
+    dueDate?: string;
+    lineItems?: Array<{
+      description: string;
+      quantity: number;
+      unitPriceDecimal?: string;
+      unitPriceDollars?: string;
+    }>;
+    taxRatePercent?: number;
+    notes?: string;
+    terms?: string;
+    missingFields?: string[];
+    clarificationRequired?: boolean;
+  };
+  extractedFields?: {
+    clientName?: string;
     clientReference?: string;
     clientId?: string;
     recipientEmail?: string;
@@ -58,7 +80,8 @@ export interface ExtractionResponseData {
     lineItems?: Array<{
       description: string;
       quantity: number;
-      unitPriceDollars: string;
+      unitPriceDollars?: string;
+      unitPriceDecimal?: string;
     }>;
     taxRatePercent?: number;
     notes?: string;
@@ -71,8 +94,8 @@ export interface ExtractionResponseData {
     company?: string | null;
   } | null;
   missingFields: string[];
-  confidence: number;
-  reasoning: string;
+  confidence?: number;
+  reasoning?: string;
   clarificationMessage?: string;
   explanation?: string;
 }

@@ -54,19 +54,19 @@ export function ReviewStep({
 }: ReviewStepProps) {
   // Form State with pure lazy initializers
   const [clientId, setClientId] = useState<string>(
-    () => initialData.clientId ?? knownClients[0]?.id ?? ""
+    () => (initialData.clientId !== undefined ? initialData.clientId : "")
   );
   const [recipientEmail, setRecipientEmail] = useState<string>(
-    () => initialData.recipientEmail ?? knownClients[0]?.email ?? ""
+    () => (initialData.recipientEmail !== undefined ? initialData.recipientEmail : "")
   );
   const [title, setTitle] = useState<string>(
-    () => initialData.title ?? "Professional Services"
+    () => initialData.title || "Invoice Draft"
   );
   const [invoiceDate, setInvoiceDate] = useState<string>(
-    () => initialData.invoiceDate ?? new Date().toISOString().substring(0, 10)
+    () => initialData.invoiceDate || new Date().toISOString().substring(0, 10)
   );
   const [dueDate, setDueDate] = useState<string>(
-    () => initialData.dueDate ?? new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10)
+    () => (initialData.dueDate !== undefined ? initialData.dueDate : "")
   );
   const [currency] = useState<string>("USD");
   const [taxRatePercent, setTaxRatePercent] = useState<number>(
@@ -85,9 +85,9 @@ export function ReviewStep({
       : [
           {
             id: "item-1",
-            description: "Consulting Services",
+            description: "",
             quantity: 1,
-            unitPriceDollars: "150.00",
+            unitPriceDollars: "",
           },
         ]
   );
@@ -108,9 +108,9 @@ export function ReviewStep({
   const handleAddLineItem = () => {
     const newItem: EditableLineItem = {
       id: `item-${Date.now()}`,
-      description: "Additional Service",
+      description: "",
       quantity: 1,
-      unitPriceDollars: "100.00",
+      unitPriceDollars: "",
     };
     setLineItems([...lineItems, newItem]);
   };
@@ -168,8 +168,30 @@ export function ReviewStep({
       setIsSaving(false);
       return;
     }
+    if (!dueDate) {
+      setSaveError("A due date is required.");
+      setIsSaving(false);
+      return;
+    }
     if (dueDate < invoiceDate) {
       setSaveError("Due date must be on or after the invoice date.");
+      setIsSaving(false);
+      return;
+    }
+    if (lineItems.length === 0 || lineItems.some((li) => !li.description.trim())) {
+      setSaveError("All line items must have a description.");
+      setIsSaving(false);
+      return;
+    }
+    if (
+      lineItems.some(
+        (li) =>
+          !li.unitPriceDollars ||
+          isNaN(parseFloat(li.unitPriceDollars)) ||
+          parseFloat(li.unitPriceDollars) < 0
+      )
+    ) {
+      setSaveError("All line items must have a valid non-negative unit price.");
       setIsSaving(false);
       return;
     }
@@ -296,6 +318,9 @@ export function ReviewStep({
                   onChange={(e) => handleClientChange(e.target.value)}
                   className="w-full p-2.5 rounded-xl border border-[#E3E8EF] text-xs bg-[#F6F5F1]/30 focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61]"
                 >
+                  <option value="" disabled={Boolean(clientId)}>
+                    -- Select a workspace client --
+                  </option>
                   {knownClients.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} {c.company ? `(${c.company})` : ""}

@@ -43,38 +43,135 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
     setIsExtracting(false);
     setExtractionError(null);
 
-    const fields = extractionResponse?.extractedFields ?? {};
-    const missing = extractionResponse?.missingFields ?? [];
+    const draft = extractionResponse?.extractedDraft ?? extractionResponse?.extractedFields ?? {};
+    const matched = extractionResponse?.matchedClient ?? null;
+    const missing = new Set<string>(extractionResponse?.missingFields ?? []);
 
-    // Map extracted line items to editable items with local IDs
-    const mappedLineItems: EditableLineItem[] = (fields.lineItems ?? []).map((li, idx: number) => ({
-      id: `item-${idx + 1}-${Date.now()}`,
-      description: li.description || "Service",
-      quantity: li.quantity || 1,
-      unitPriceDollars: li.unitPriceDollars ? String(li.unitPriceDollars) : "150.00",
-    }));
+    // 1. Resolve client (never silently default to first client if missing/ambiguous)
+    let resolvedClientId = "";
+    let resolvedRecipientEmail = draft.recipientEmail || "";
 
-    setDraftFormData({
-      clientId: fields.clientId || knownClients[0]?.id || "",
-      recipientEmail: fields.recipientEmail || knownClients[0]?.email || "",
-      title: fields.title || "Consulting & Professional Services",
-      invoiceDate: fields.invoiceDate || new Date().toISOString().substring(0, 10),
-      dueDate: fields.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10),
-      currency: fields.currency || "USD",
-      taxRatePercent: fields.taxRatePercent ?? 0,
-      lineItems: mappedLineItems.length > 0 ? mappedLineItems : [
+    if (matched?.id) {
+      resolvedClientId = matched.id;
+      if (!resolvedRecipientEmail) {
+        resolvedRecipientEmail = matched.email;
+      }
+      missing.delete("client");
+      missing.delete("recipientEmail");
+    } else if (draft.clientName) {
+      const normalize = (s: string) =>
+        s
+          .toLowerCase()
+          .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "")
+          .replace(/\b(inc|corporation|corp|llc|co|company|ltd|associates)\b/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+
+      const raw = draft.clientName.trim().toLowerCase();
+      const base = normalize(draft.clientName);
+
+      const matches = knownClients.filter((c) => {
+        const cName = c.name.toLowerCase();
+        const cComp = (c.company || "").toLowerCase();
+        return (
+          cName === raw ||
+          cComp === raw ||
+          cName.includes(raw) ||
+          cComp.includes(raw) ||
+          (base.length > 2 &&
+            (normalize(c.name).includes(base) || normalize(c.company || "").includes(base)))
+        );
+      });
+
+      if (matches.length === 1) {
+        resolvedClientId = matches[0].id;
+        if (!resolvedRecipientEmail) {
+          resolvedRecipientEmail = matches[0].email;
+        }
+        missing.delete("client");
+        missing.delete("recipientEmail");
+      } else {
+        missing.add("client");
+      }
+    } else {
+      missing.add("client");
+    }
+
+    if (!resolvedRecipientEmail) {
+      missing.add("recipientEmail");
+    }
+
+    // 2. Map line items (handle unitPriceDecimal from API)
+    const rawItems = draft.lineItems ?? [];
+    let mappedLineItems: EditableLineItem[] = [];
+
+    if (rawItems.length > 0) {
+      mappedLineItems = rawItems.map((li, idx: number) => {
+        const priceStr =
+          li.unitPriceDecimal !== undefined
+            ? String(li.unitPriceDecimal)
+            : li.unitPriceDollars !== undefined
+            ? String(li.unitPriceDollars)
+            : "";
+        return {
+          id: `item-${idx + 1}-${Date.now()}`,
+          description: li.description || "",
+          quantity: li.quantity !== undefined ? Math.max(Number(li.quantity), 1) : 1,
+          unitPriceDollars: priceStr,
+        };
+      });
+    }
+
+    // Never substitute generic service/price if line items were missing
+    if (mappedLineItems.length === 0) {
+      missing.add("lineItems");
+      mappedLineItems = [
         {
           id: `item-1-${Date.now()}`,
-          description: "Consulting Services",
+          description: "",
           quantity: 1,
-          unitPriceDollars: "150.00",
+          unitPriceDollars: "",
         },
-      ],
-      notes: fields.notes || `Prompt used: "${promptText}"`,
-      terms: fields.terms || "Payment due within net terms.",
+      ];
+    }
+
+    // 3. Due Date
+    const resolvedDueDate = draft.dueDate || "";
+    if (!resolvedDueDate) {
+      missing.add("dueDate");
+    }
+
+    // 4. Title, Notes, Terms, Tax
+    const matchedName =
+      matched?.name ||
+      (resolvedClientId ? knownClients.find((c) => c.id === resolvedClientId)?.name : null);
+    const resolvedTitle =
+      draft.title ||
+      (matchedName
+        ? `${matchedName} Services`
+        : draft.clientName
+        ? `${draft.clientName} Services`
+        : "Professional Services Invoice");
+    const resolvedTaxRate = draft.taxRatePercent !== undefined ? draft.taxRatePercent : 0;
+    const resolvedTerms = draft.terms || "Payment due upon receipt or within net terms.";
+    const resolvedNotes = draft.notes || `Prompt used: "${promptText}"`;
+    const resolvedInvoiceDate =
+      draft.invoiceDate || new Date().toISOString().substring(0, 10);
+
+    setDraftFormData({
+      clientId: resolvedClientId,
+      recipientEmail: resolvedRecipientEmail,
+      title: resolvedTitle,
+      invoiceDate: resolvedInvoiceDate,
+      dueDate: resolvedDueDate,
+      currency: draft.currency || "USD",
+      taxRatePercent: resolvedTaxRate,
+      lineItems: mappedLineItems,
+      notes: resolvedNotes,
+      terms: resolvedTerms,
     });
 
-    setMissingFields(missing);
+    setMissingFields(Array.from(missing));
     setExtractionSource(extractionResponse?.source ?? "deterministic_rule_based");
     setModelName(extractionResponse?.modelName);
     setCurrentStep("REVIEW");
