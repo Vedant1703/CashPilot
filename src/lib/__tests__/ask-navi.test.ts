@@ -22,13 +22,20 @@ import {
 import { POST as chatRoute } from "@/app/api/navi-ai/chat/route";
 import { db } from "@/lib/db/client";
 import { CashPilotStatus } from "@prisma/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Ask Navi Guided Chatbot & Safety Governance", () => {
   const testWorkspaceId = "demo-workspace-ask-navi-test";
   const testClientId = "demo-client-navi-test";
   const testInvoiceId = "demo-inv-navi-test";
 
+  let sessionDemo: { cookieHeader: string; sessionToken: string };
+  let sessionIntruder: { cookieHeader: string; sessionToken: string };
+
   beforeAll(async () => {
+    sessionDemo = createTestSession({ userId: "demo-user-1", email: "demo@example.com" });
+    sessionIntruder = createTestSession({ userId: "unauthorized-intruder", email: "intruder@example.com" });
+
     // Setup test workspace, client, and an overdue invoice
     await db.workspace.upsert({
       where: { id: testWorkspaceId },
@@ -310,7 +317,7 @@ describe("Ask Navi Guided Chatbot & Safety Governance", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-actor-id": "unauthorized-intruder",
+          Cookie: sessionIntruder.cookieHeader,
         },
         body: JSON.stringify({
           message: "Which invoices need attention first?",
@@ -325,12 +332,31 @@ describe("Ask Navi Guided Chatbot & Safety Governance", () => {
       expect(json.code).toBe("CROSS_WORKSPACE_FORBIDDEN");
     });
 
+    it("returns 401 for unauthenticated request", async () => {
+      const req = new NextRequest("http://localhost:3000/api/navi-ai/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: "Which invoices need attention first?",
+          workspaceId: testWorkspaceId,
+        }),
+      });
+
+      const res = await chatRoute(req);
+      expect(res.status).toBe(401);
+      const json = await res.json();
+      expect(json.success).toBe(false);
+      expect(json.code).toBe("UNAUTHORIZED");
+    });
+
     it("returns 200 with grounded message and follow-ups on authorized request", async () => {
       const req = new NextRequest("http://localhost:3000/api/navi-ai/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-actor-id": "demo-user-1",
+          Cookie: sessionDemo.cookieHeader,
         },
         body: JSON.stringify({
           message: "Which invoices need attention first?",

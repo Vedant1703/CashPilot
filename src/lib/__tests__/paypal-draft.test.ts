@@ -34,6 +34,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
   const workspaceA = "demo-workspace-paypal-a";
@@ -41,6 +42,9 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
   const ownerA = "demo-user-paypal-a";
   const ownerB = "demo-user-paypal-b";
   const clientA = "demo-client-paypal-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -50,6 +54,9 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
   const getStatusSpy = vi.spyOn(paypalAdapter, "getPayPalInvoiceStatus");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "paypal-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "paypal-b@example.com" });
+
     // Setup test workspaces and client in local PostgreSQL
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -144,7 +151,10 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
     const draftRes = await draftRoute(
       new NextRequest("http://localhost:3000/api/invoices/draft", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: sessionA.cookieHeader,
+        },
         body: JSON.stringify(draftPayload),
       })
     );
@@ -160,7 +170,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_INVOICE",
@@ -247,7 +257,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({ approvalId }),
         }),
@@ -327,7 +337,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -341,7 +351,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -382,7 +392,10 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
       const draftRes = await draftRoute(
         new NextRequest("http://localhost:3000/api/invoices/draft", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Cookie: sessionA.cookieHeader,
+          },
           body: JSON.stringify(draftPayload),
         })
       );
@@ -395,7 +408,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -435,7 +448,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -461,7 +474,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -487,7 +500,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -528,7 +541,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerB, // Belongs to workspace B, not A!
+            Cookie: sessionB.cookieHeader, // Belongs to workspace B, not A!
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -540,30 +553,24 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
       expect(createDraftSpy).not.toHaveBeenCalled();
     });
 
-    it("rejects missing actor in production with 401 Unauthorized", async () => {
-      const originalEnv = process.env.NODE_ENV;
-      try {
-        (process.env as Record<string, string | undefined>).NODE_ENV = "production";
-        const { invoiceId } = await createApprovedTestInvoice();
+    it("rejects unauthenticated request with 401 Unauthorized", async () => {
+      const { invoiceId } = await createApprovedTestInvoice();
 
-        const res = await paypalDraftRoute(
-          new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/paypal-draft`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              // No actor header provided
-            },
-          }),
-          { params: Promise.resolve({ id: invoiceId }) }
-        );
+      const res = await paypalDraftRoute(
+        new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/paypal-draft`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // No session cookie provided
+          },
+        }),
+        { params: Promise.resolve({ id: invoiceId }) }
+      );
 
-        const json = await res.json();
-        expect(res.status).toBe(401);
-        expect(json.code).toBe("UNAUTHORIZED");
-        expect(createDraftSpy).not.toHaveBeenCalled();
-      } finally {
-        (process.env as Record<string, string | undefined>).NODE_ENV = originalEnv;
-      }
+      const json = await res.json();
+      expect(res.status).toBe(401);
+      expect(json.code).toBe("UNAUTHORIZED");
+      expect(createDraftSpy).not.toHaveBeenCalled();
     });
 
     it("returns 404 for nonexistent invoice", async () => {
@@ -572,7 +579,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: "nonexistent-id-000" }) }
@@ -606,7 +613,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -635,7 +642,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
@@ -666,7 +673,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
         }),
         { params: Promise.resolve({ id: invoiceId }) }

@@ -38,6 +38,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
   const workspaceA = "demo-workspace-remind-a";
@@ -45,6 +46,9 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
   const ownerA = "demo-user-remind-a";
   const ownerB = "demo-user-remind-b";
   const clientA = "demo-client-remind-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -55,6 +59,9 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
   const getStatusSpy = vi.spyOn(paypalAdapter, "getPayPalInvoiceStatus");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "remind-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "remind-b@example.com" });
+
     // Setup test workspaces and client in PostgreSQL
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -129,8 +136,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-workspace-id": workspaceA,
-        "x-actor-id": ownerA,
+        Cookie: sessionA.cookieHeader,
       },
       body: JSON.stringify({
         workspaceId: workspaceA,
@@ -201,8 +207,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_REMINDER",
@@ -247,8 +252,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           approvalId: approval.id,
@@ -320,8 +324,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({}),
       }
@@ -358,8 +361,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -395,8 +397,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -428,8 +429,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -469,8 +469,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -503,8 +502,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -544,8 +542,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceB, // Different workspace!
-          "x-actor-id": ownerB,
+          Cookie: sessionB.cookieHeader, // Different workspace!
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -561,6 +558,32 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
     expect(remindSpy).not.toHaveBeenCalled();
   });
 
+  // 8b. Unauthenticated access rejected with 401
+  it("rejects unauthenticated request with 401 Unauthorized", async () => {
+    const inv = await createSentTestInvoice();
+    const approval = await approveReminderForInvoice(inv);
+
+    const req = new NextRequest(
+      `http://localhost:3000/api/invoices/${inv.id}/remind`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ approvalId: approval.id }),
+      }
+    );
+
+    const res = await remindRoute(req, {
+      params: Promise.resolve({ id: inv.id }),
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(401);
+    expect(json.code).toBe("UNAUTHORIZED");
+    expect(remindSpy).not.toHaveBeenCalled();
+  });
+
   // 9. Ineligible status: DRAFT invoice rejected with 400 Bad Request
   it("rejects draft invoices with 400 Bad Request", async () => {
     // Create draft invoice without setting to AWAITING_PAYMENT
@@ -568,8 +591,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-workspace-id": workspaceA,
-        "x-actor-id": ownerA,
+        Cookie: sessionA.cookieHeader,
       },
       body: JSON.stringify({
         workspaceId: workspaceA,
@@ -592,8 +614,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({}),
       }
@@ -621,8 +642,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            "x-workspace-id": workspaceA,
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({}),
         }
@@ -656,8 +676,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({}),
       }
@@ -699,8 +718,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -737,8 +755,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -778,8 +795,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -818,8 +834,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -851,8 +866,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -886,8 +900,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -930,8 +943,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }
@@ -977,8 +989,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.id }),
       }

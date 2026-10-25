@@ -24,6 +24,7 @@ import { db } from "@/lib/db/client";
 import * as paypalAdapter from "@/lib/paypal/adapter";
 import { CashPilotStatus, OperationAttemptState } from "@prisma/client";
 import { formatMoney } from "@/lib/money";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
   const workspaceA = "demo-workspace-detail-a";
@@ -31,6 +32,9 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
   const ownerA = "demo-user-detail-a";
   const ownerB = "demo-user-detail-b";
   const clientA = "demo-client-detail-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -42,6 +46,9 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
   const cancelInvoiceSpy = vi.spyOn(paypalAdapter, "cancelPayPalInvoice");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "detail-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "detail-b@example.com" });
+
     // Setup test workspaces
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -295,8 +302,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       });
 
@@ -360,8 +366,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       });
 
@@ -413,8 +418,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       });
 
@@ -468,8 +472,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       });
 
@@ -517,8 +520,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       });
 
@@ -562,8 +564,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceB,
-          "x-actor-id": ownerB, // owner of workspace B, NOT workspace A
+          Cookie: sessionB.cookieHeader, // owner of workspace B, NOT workspace A
         },
       });
 
@@ -576,13 +577,49 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
       expect(json.code).toBe("CROSS_WORKSPACE_FORBIDDEN");
     });
 
+    it("rejects unauthenticated requests with 401 Unauthorized", async () => {
+      const inv = await db.invoice.create({
+        data: {
+          workspaceId: workspaceA,
+          clientId: clientA,
+          number: "INV-UNAUTH-DETAIL",
+          title: "Unauth Test Invoice",
+          currency: "USD",
+          subtotalMinorUnits: 10000,
+          totalMinorUnits: 10000,
+          dueDate: new Date("2026-11-04"),
+          cashpilotStatus: CashPilotStatus.DRAFT,
+        },
+      });
+      createdInvoiceIds.push(inv.id);
+
+      const syncReq = new NextRequest(`http://localhost:3000/api/invoices/${inv.id}/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const syncRes = await syncRoute(syncReq, {
+        params: Promise.resolve({ id: inv.id }),
+      });
+      expect(syncRes.status).toBe(401);
+      const syncJson = await syncRes.json();
+      expect(syncJson.code).toBe("UNAUTHORIZED");
+
+      const getReq = new NextRequest(`http://localhost:3000/api/invoices/${inv.id}`);
+      const getRes = await getInvoiceRoute(getReq, {
+        params: Promise.resolve({ id: inv.id }),
+      });
+      expect(getRes.status).toBe(401);
+      const getJson = await getRes.json();
+      expect(getJson.code).toBe("UNAUTHORIZED");
+    });
+
     it("returns 404 for nonexistent invoice ID on sync and get routes", async () => {
       const syncReq = new NextRequest("http://localhost:3000/api/invoices/nonexistent-id/sync", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       });
 
@@ -591,7 +628,9 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
       });
       expect(syncRes.status).toBe(404);
 
-      const getReq = new NextRequest("http://localhost:3000/api/invoices/nonexistent-id?workspaceId=" + workspaceA);
+      const getReq = new NextRequest("http://localhost:3000/api/invoices/nonexistent-id", {
+        headers: { Cookie: sessionA.cookieHeader },
+      });
       const getRes = await getInvoiceRoute(getReq, {
         params: Promise.resolve({ id: "nonexistent-id" }),
       });
@@ -603,8 +642,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       });
 

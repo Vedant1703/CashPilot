@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createInvoice } from "@/lib/services/invoice.service";
+import { authorizeWorkspaceAccess } from "@/lib/auth/guard";
 import type { InvoiceInput } from "@/lib/validations/invoice";
 
 /**
@@ -8,6 +9,7 @@ import type { InvoiceInput } from "@/lib/validations/invoice";
  * Creates a new draft invoice with deterministic server-side total calculation.
  * Never executes external writes (PayPal/AI calls).
  * Bound to exact schema validation; client-supplied totals are rejected if mismatched.
+ * Enforces session-backed workspace authorization.
  */
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -29,22 +31,24 @@ export async function POST(req: NextRequest) {
 
   const rawBody = body as Record<string, unknown>;
 
-  // Resolve workspace and actor boundaries safely
-  const workspaceId =
-    (typeof rawBody.workspaceId === "string" && rawBody.workspaceId.trim()) ||
-    req.headers.get("x-workspace-id") ||
-    process.env.DEMO_WORKSPACE_ID ||
-    "demo-workspace-1";
+  const requestedWorkspaceId =
+    typeof rawBody.workspaceId === "string" && rawBody.workspaceId.trim().length > 0
+      ? rawBody.workspaceId.trim()
+      : undefined;
 
-  const actorId =
-    (typeof rawBody.actorId === "string" && rawBody.actorId.trim()) ||
-    req.headers.get("x-actor-id") ||
-    "demo-user-1";
+  // Enforce session authorization for requested or primary workspace
+  const auth = await authorizeWorkspaceAccess(req, requestedWorkspaceId);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { success: false, error: auth.error, code: auth.code },
+      { status: auth.status }
+    );
+  }
 
   try {
     const result = await createInvoice(
-      workspaceId,
-      actorId,
+      auth.context.workspaceId,
+      auth.context.actorId,
       rawBody as unknown as InvoiceInput
     );
 

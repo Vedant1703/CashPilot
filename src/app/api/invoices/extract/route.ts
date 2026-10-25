@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { extractInvoiceFromPrompt } from "@/lib/services/ai-extraction.service";
+import { authorizeWorkspaceAccess } from "@/lib/auth/guard";
 import { z } from "zod";
 
 const extractRequestSchema = z.object({
@@ -15,6 +16,7 @@ const extractRequestSchema = z.object({
  *
  * Extracts structured invoice proposal from natural language prompt.
  * Strictly server-side validation; model responses never execute external writes.
+ * Enforces session-backed workspace authorization.
  */
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -39,19 +41,20 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const workspaceId =
-    parsed.data.workspaceId ||
-    req.headers.get("x-workspace-id") ||
-    process.env.DEMO_WORKSPACE_ID ||
-    "demo-workspace-1";
-
-  const actorId = req.headers.get("x-actor-id") || "demo-user-1";
+  // Enforce session authorization for requested workspace
+  const auth = await authorizeWorkspaceAccess(req, parsed.data.workspaceId);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { success: false, error: auth.error, code: auth.code },
+      { status: auth.status }
+    );
+  }
 
   try {
     const result = await extractInvoiceFromPrompt(
-      workspaceId,
+      auth.context.workspaceId,
       parsed.data.prompt,
-      actorId
+      auth.context.actorId
     );
 
     return NextResponse.json(

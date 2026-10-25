@@ -27,6 +27,7 @@ import { db } from "@/lib/db/client";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 import * as paypalAdapter from "@/lib/paypal/adapter";
 import { ApprovalStatus, ActivityEventType } from "@prisma/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Secure Invoice Approval Gate", () => {
   const workspaceA = "demo-workspace-approval-a";
@@ -34,6 +35,9 @@ describe("Secure Invoice Approval Gate", () => {
   const ownerA = "demo-user-approval-a";
   const ownerB = "demo-user-approval-b";
   const clientA = "demo-client-approval-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -43,6 +47,9 @@ describe("Secure Invoice Approval Gate", () => {
   const getAccessTokenSpy = vi.spyOn(paypalAdapter, "getPayPalAccessToken");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "approval-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "approval-b@example.com" });
+
     // Setup isolated test workspaces and clients in local PostgreSQL
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -125,7 +132,10 @@ describe("Secure Invoice Approval Gate", () => {
     const res = await draftRoute(
       new NextRequest("http://localhost:3000/api/invoices/draft", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: sessionA.cookieHeader,
+        },
         body: JSON.stringify(payload),
       })
     );
@@ -337,7 +347,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -387,7 +397,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -405,7 +415,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -433,7 +443,7 @@ describe("Secure Invoice Approval Gate", () => {
       const getRes = await getInvoiceRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}`, {
           method: "GET",
-          headers: { "x-workspace-id": workspaceA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -448,7 +458,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -473,7 +483,7 @@ describe("Secure Invoice Approval Gate", () => {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "x-actor-id": ownerA,
+              Cookie: sessionA.cookieHeader,
             },
             body: JSON.stringify({
               actionType: "SEND_INVOICE",
@@ -487,7 +497,7 @@ describe("Secure Invoice Approval Gate", () => {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "x-actor-id": ownerA,
+              Cookie: sessionA.cookieHeader,
             },
             body: JSON.stringify({
               actionType: "SEND_INVOICE",
@@ -528,7 +538,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -566,7 +576,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -594,7 +604,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({ actionType: "SEND_INVOICE" }),
         }),
@@ -615,7 +625,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -632,7 +642,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -652,7 +662,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: "INVALID_JSON{{{",
         }),
@@ -671,7 +681,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -694,13 +704,13 @@ describe("Secure Invoice Approval Gate", () => {
     it("rejects cross-workspace approval with 403 Forbidden", async () => {
       const { invoiceId, initialHash } = await createTestDraft();
 
-      // Attempt to approve invoice in Workspace A using actor credentials of Workspace B's owner
+      // Attempt to approve invoice in Workspace A using session credentials of Workspace B's owner
       const res = await approveRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/approve`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerB, // Actor belongs to workspace B, not A!
+            Cookie: sessionB.cookieHeader, // User B belongs to workspace B, not A!
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",
@@ -721,33 +731,27 @@ describe("Secure Invoice Approval Gate", () => {
       expect(count).toBe(0);
     });
 
-    it("rejects missing actor with 401 Unauthorized when NODE_ENV is production", async () => {
-      const originalEnv = process.env.NODE_ENV;
-      try {
-        (process.env as Record<string, string | undefined>).NODE_ENV = "production";
-        const { invoiceId, initialHash } = await createTestDraft();
+    it("rejects unauthenticated request with 401 Unauthorized", async () => {
+      const { invoiceId, initialHash } = await createTestDraft();
 
-        const res = await approveRoute(
-          new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/approve`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              // No actor header provided
-            },
-            body: JSON.stringify({
-              actionType: "SEND_INVOICE",
-              reviewedPayloadHash: initialHash,
-            }),
+      const res = await approveRoute(
+        new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/approve`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // No session cookie
+          },
+          body: JSON.stringify({
+            actionType: "SEND_INVOICE",
+            reviewedPayloadHash: initialHash,
           }),
-          { params: Promise.resolve({ id: invoiceId }) }
-        );
+        }),
+        { params: Promise.resolve({ id: invoiceId }) }
+      );
 
-        const json = await res.json();
-        expect(res.status).toBe(401);
-        expect(json.code).toBe("UNAUTHORIZED");
-      } finally {
-        (process.env as Record<string, string | undefined>).NODE_ENV = originalEnv;
-      }
+      const json = await res.json();
+      expect(res.status).toBe(401);
+      expect(json.code).toBe("UNAUTHORIZED");
     });
   });
 
@@ -767,7 +771,7 @@ describe("Secure Invoice Approval Gate", () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-actor-id": ownerA,
+            Cookie: sessionA.cookieHeader,
           },
           body: JSON.stringify({
             actionType: "SEND_INVOICE",

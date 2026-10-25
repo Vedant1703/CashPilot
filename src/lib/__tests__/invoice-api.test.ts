@@ -20,17 +20,34 @@ import { POST as draftRoute } from "@/app/api/invoices/draft/route";
 import { GET as getInvoiceRoute } from "@/app/api/invoices/[id]/route";
 import { db } from "@/lib/db/client";
 import * as paypalAdapter from "@/lib/paypal/adapter";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Invoice Draft and Review APIs", () => {
   const workspaceId = "demo-workspace-1";
   const clientId = "demo-client-1";
   const createdInvoiceIds: string[] = [];
+  let authCookie = "";
+
+  function createAuthReq(url: string, method = "GET", body?: unknown): NextRequest {
+    const headers = new Headers();
+    headers.set("Content-Type", "application/json");
+    headers.set("Cookie", authCookie);
+    return new NextRequest(new URL(url, "http://localhost:3000"), {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  }
 
   // Spy on PayPal adapter to verify zero external calls
   const createPayPalDraftSpy = vi.spyOn(paypalAdapter, "createPayPalDraftInvoice");
   const sendPayPalSpy = vi.spyOn(paypalAdapter, "sendPayPalInvoice");
 
   beforeAll(async () => {
+    // Register verified session for demo-user-1
+    const session = createTestSession({ actorId: "demo-user-1", workspaceId });
+    authCookie = session.cookieHeader;
+
     // Ensure demo workspace and client exist in local PostgreSQL
     await db.workspace.upsert({
       where: { id: workspaceId },
@@ -99,11 +116,7 @@ describe("Invoice Draft and Review APIs", () => {
       ],
     };
 
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", payload);
 
     const res = await draftRoute(req);
     expect(res.status).toBe(201);
@@ -166,11 +179,7 @@ describe("Invoice Draft and Review APIs", () => {
       ],
     };
 
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", payload);
 
     const res = await draftRoute(req);
     expect(res.status).toBe(400);
@@ -199,11 +208,7 @@ describe("Invoice Draft and Review APIs", () => {
       ],
     };
 
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", payload);
 
     const res = await draftRoute(req);
     expect(res.status).toBe(400);
@@ -217,13 +222,9 @@ describe("Invoice Draft and Review APIs", () => {
   // 3. Validation Rules (Missing fields, floats, negative values)
   // ───────────────────────────────────────────────────────────────────────────
   it("rejects missing required fields", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        // Missing clientId, currency, dueDate, lineItems
-        title: "Incomplete Invoice",
-      }),
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", {
+      // Missing clientId, currency, dueDate, lineItems
+      title: "Incomplete Invoice",
     });
 
     const res = await draftRoute(req);
@@ -234,17 +235,13 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("rejects empty line items array", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId,
-        clientId,
-        currency: "USD",
-        taxRateBasisPoints: 0,
-        dueDate: "2026-11-01",
-        lineItems: [], // EMPTY
-      }),
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", {
+      workspaceId,
+      clientId,
+      currency: "USD",
+      taxRateBasisPoints: 0,
+      dueDate: "2026-11-01",
+      lineItems: [], // EMPTY
     });
 
     const res = await draftRoute(req);
@@ -254,23 +251,19 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("rejects floating-point monetary input", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId,
-        clientId,
-        currency: "USD",
-        taxRateBasisPoints: 0,
-        dueDate: "2026-11-01",
-        lineItems: [
-          {
-            description: "Invalid Float Item",
-            quantity: 1,
-            unitPriceMinorUnits: 15.5, // Float not allowed
-          },
-        ],
-      }),
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", {
+      workspaceId,
+      clientId,
+      currency: "USD",
+      taxRateBasisPoints: 0,
+      dueDate: "2026-11-01",
+      lineItems: [
+        {
+          description: "Invalid Float Item",
+          quantity: 1,
+          unitPriceMinorUnits: 15.5, // Float not allowed
+        },
+      ],
     });
 
     const res = await draftRoute(req);
@@ -280,23 +273,19 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("rejects negative unit price", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId,
-        clientId,
-        currency: "USD",
-        taxRateBasisPoints: 0,
-        dueDate: "2026-11-01",
-        lineItems: [
-          {
-            description: "Negative Price",
-            quantity: 1,
-            unitPriceMinorUnits: -500,
-          },
-        ],
-      }),
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", {
+      workspaceId,
+      clientId,
+      currency: "USD",
+      taxRateBasisPoints: 0,
+      dueDate: "2026-11-01",
+      lineItems: [
+        {
+          description: "Negative Price",
+          quantity: 1,
+          unitPriceMinorUnits: -500,
+        },
+      ],
     });
 
     const res = await draftRoute(req);
@@ -306,23 +295,19 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("rejects unsupported currencies", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId,
-        clientId,
-        currency: "EUR", // Unsupported
-        taxRateBasisPoints: 0,
-        dueDate: "2026-11-01",
-        lineItems: [
-          {
-            description: "EUR item",
-            quantity: 1,
-            unitPriceMinorUnits: 1000,
-          },
-        ],
-      }),
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", {
+      workspaceId,
+      clientId,
+      currency: "EUR", // Unsupported
+      taxRateBasisPoints: 0,
+      dueDate: "2026-11-01",
+      lineItems: [
+        {
+          description: "EUR item",
+          quantity: 1,
+          unitPriceMinorUnits: 1000,
+        },
+      ],
     });
 
     const res = await draftRoute(req);
@@ -332,24 +317,20 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("rejects due date earlier than invoice date", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId,
-        clientId,
-        currency: "USD",
-        taxRateBasisPoints: 0,
-        invoiceDate: "2026-10-20",
-        dueDate: "2026-10-10", // 10 days BEFORE invoice date
-        lineItems: [
-          {
-            description: "Past Due Item",
-            quantity: 1,
-            unitPriceMinorUnits: 1000,
-          },
-        ],
-      }),
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", {
+      workspaceId,
+      clientId,
+      currency: "USD",
+      taxRateBasisPoints: 0,
+      invoiceDate: "2026-10-20",
+      dueDate: "2026-10-10", // 10 days BEFORE invoice date
+      lineItems: [
+        {
+          description: "Past Due Item",
+          quantity: 1,
+          unitPriceMinorUnits: 1000,
+        },
+      ],
     });
 
     const res = await draftRoute(req);
@@ -359,23 +340,19 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("rejects client not in workspace", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/draft", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workspaceId,
-        clientId: "nonexistent-client-id",
-        currency: "USD",
-        taxRateBasisPoints: 0,
-        dueDate: "2026-11-01",
-        lineItems: [
-          {
-            description: "Valid item",
-            quantity: 1,
-            unitPriceMinorUnits: 1000,
-          },
-        ],
-      }),
+    const req = createAuthReq("http://localhost:3000/api/invoices/draft", "POST", {
+      workspaceId,
+      clientId: "nonexistent-client-id",
+      currency: "USD",
+      taxRateBasisPoints: 0,
+      dueDate: "2026-11-01",
+      lineItems: [
+        {
+          description: "Valid item",
+          quantity: 1,
+          unitPriceMinorUnits: 1000,
+        },
+      ],
     });
 
     const res = await draftRoute(req);
@@ -384,12 +361,22 @@ describe("Invoice Draft and Review APIs", () => {
     expect(json.error).toBe("Client not found in this workspace");
   });
 
+  it("rejects unauthenticated draft creation with 401", async () => {
+    const unauthReq = new NextRequest("http://localhost:3000/api/invoices/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const res = await draftRoute(unauthReq);
+    expect(res.status).toBe(401);
+  });
+
   // ───────────────────────────────────────────────────────────────────────────
   // 4. GET /api/invoices/[id] Retrieval
   // ───────────────────────────────────────────────────────────────────────────
   it("retrieves an existing invoice with safe public fields and material hash", async () => {
     // Seeded invoice demo-invoice-1
-    const req = new NextRequest("http://localhost:3000/api/invoices/demo-invoice-1?workspaceId=demo-workspace-1");
+    const req = createAuthReq("http://localhost:3000/api/invoices/demo-invoice-1");
     const res = await getInvoiceRoute(req, {
       params: Promise.resolve({ id: "demo-invoice-1" }),
     });
@@ -415,7 +402,7 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("includes activities timeline in GET /api/invoices/[id] to support dynamic UI refresh", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/demo-invoice-1?workspaceId=demo-workspace-1");
+    const req = createAuthReq("http://localhost:3000/api/invoices/demo-invoice-1");
     const res = await getInvoiceRoute(req, {
       params: Promise.resolve({ id: "demo-invoice-1" }),
     });
@@ -434,7 +421,7 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("returns 404 for nonexistent invoice ID", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/nonexistent-id?workspaceId=demo-workspace-1");
+    const req = createAuthReq("http://localhost:3000/api/invoices/nonexistent-id");
     const res = await getInvoiceRoute(req, {
       params: Promise.resolve({ id: "nonexistent-id" }),
     });
@@ -446,7 +433,7 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   it("returns 400 for empty or whitespace invoice ID", async () => {
-    const req = new NextRequest("http://localhost:3000/api/invoices/   ?workspaceId=demo-workspace-1");
+    const req = createAuthReq("http://localhost:3000/api/invoices/   ");
     const res = await getInvoiceRoute(req, {
       params: Promise.resolve({ id: "   " }),
     });
@@ -455,5 +442,13 @@ describe("Invoice Draft and Review APIs", () => {
     const json = await res.json();
     expect(json.success).toBe(false);
     expect(json.error).toBe("Invoice ID is required");
+  });
+
+  it("rejects unauthenticated invoice retrieval with 401", async () => {
+    const unauthReq = new NextRequest("http://localhost:3000/api/invoices/demo-invoice-1");
+    const res = await getInvoiceRoute(unauthReq, {
+      params: Promise.resolve({ id: "demo-invoice-1" }),
+    });
+    expect(res.status).toBe(401);
   });
 });

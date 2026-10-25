@@ -29,6 +29,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("PayPal Status Reconciliation & Sync API", () => {
   const workspaceA = "demo-workspace-sync-a";
@@ -36,6 +37,9 @@ describe("PayPal Status Reconciliation & Sync API", () => {
   const ownerA = "demo-user-sync-a";
   const ownerB = "demo-user-sync-b";
   const clientA = "demo-client-sync-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -45,6 +49,9 @@ describe("PayPal Status Reconciliation & Sync API", () => {
   const sendInvoiceSpy = vi.spyOn(paypalAdapter, "sendPayPalInvoice");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "sync-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "sync-b@example.com" });
+
     // Setup test workspaces and client
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -132,7 +139,10 @@ describe("PayPal Status Reconciliation & Sync API", () => {
     const draftRes = await draftRoute(
       new NextRequest("http://localhost:3000/api/invoices/draft", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: sessionA.cookieHeader,
+        },
         body: JSON.stringify(payload),
       })
     );
@@ -175,7 +185,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -227,7 +237,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -257,7 +267,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -282,7 +292,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -320,7 +330,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -359,7 +369,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -410,7 +420,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -447,7 +457,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       const res = await syncRoute(
         new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
           method: "POST",
-          headers: { "x-actor-id": ownerB }, // Owner of workspace B!
+          headers: { Cookie: sessionB.cookieHeader }, // Owner of workspace B!
         }),
         { params: Promise.resolve({ id: invoiceId }) }
       );
@@ -458,35 +468,29 @@ describe("PayPal Status Reconciliation & Sync API", () => {
       expect(getStatusSpy).not.toHaveBeenCalled();
     });
 
-    it("rejects missing actor in production with 401 Unauthorized", async () => {
-      const originalEnv = process.env.NODE_ENV;
-      try {
-        (process.env as Record<string, string | undefined>).NODE_ENV = "production";
-        const paypalId = "INV2-AUTH-008";
-        const { invoiceId } = await createTestInvoiceWithPayPal(paypalId, "DRAFT");
+    it("rejects unauthenticated request with 401 Unauthorized", async () => {
+      const paypalId = "INV2-AUTH-008";
+      const { invoiceId } = await createTestInvoiceWithPayPal(paypalId, "DRAFT");
 
-        const res = await syncRoute(
-          new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
-            method: "POST",
-            // No actor header provided
-          }),
-          { params: Promise.resolve({ id: invoiceId }) }
-        );
+      const res = await syncRoute(
+        new NextRequest(`http://localhost:3000/api/invoices/${invoiceId}/sync`, {
+          method: "POST",
+          // No session cookie provided
+        }),
+        { params: Promise.resolve({ id: invoiceId }) }
+      );
 
-        const json = await res.json();
-        expect(res.status).toBe(401);
-        expect(json.code).toBe("UNAUTHORIZED");
-        expect(getStatusSpy).not.toHaveBeenCalled();
-      } finally {
-        (process.env as Record<string, string | undefined>).NODE_ENV = originalEnv;
-      }
+      const json = await res.json();
+      expect(res.status).toBe(401);
+      expect(json.code).toBe("UNAUTHORIZED");
+      expect(getStatusSpy).not.toHaveBeenCalled();
     });
 
     it("returns 404 for nonexistent invoice", async () => {
       const res = await syncRoute(
         new NextRequest("http://localhost:3000/api/invoices/nonexistent-id-sync/sync", {
           method: "POST",
-          headers: { "x-actor-id": ownerA },
+          headers: { Cookie: sessionA.cookieHeader },
         }),
         { params: Promise.resolve({ id: "nonexistent-id-sync" }) }
       );

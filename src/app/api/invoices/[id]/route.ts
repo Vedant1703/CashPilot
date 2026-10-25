@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getInvoice } from "@/lib/services/invoice.service";
+import { authorizeWorkspaceAccess } from "@/lib/auth/guard";
+import { db } from "@/lib/db/client";
 
 /**
  * GET /api/invoices/[id]
@@ -7,6 +9,7 @@ import { getInvoice } from "@/lib/services/invoice.service";
  * Retrieves an invoice by ID with its line items, safe client details,
  * server-computed totals, and deterministic material payload hash.
  * Never exposes secrets, internal credentials, or unrelated workspace records.
+ * Enforces session-backed workspace authorization.
  */
 export async function GET(
   req: NextRequest,
@@ -21,15 +24,30 @@ export async function GET(
     );
   }
 
-  const { searchParams } = new URL(req.url);
-  const workspaceId =
-    searchParams.get("workspaceId") ||
-    req.headers.get("x-workspace-id") ||
-    process.env.DEMO_WORKSPACE_ID ||
-    "demo-workspace-1";
-
   try {
-    const result = await getInvoice(id.trim(), workspaceId);
+    // 1. Fetch invoice to determine its workspace boundary
+    const invoice = await db.invoice.findUnique({
+      where: { id: id.trim() },
+      select: { workspaceId: true },
+    });
+
+    if (!invoice) {
+      return NextResponse.json(
+        { success: false, error: "Invoice not found", code: "NOT_FOUND" },
+        { status: 404 }
+      );
+    }
+
+    // 2. Enforce session authorization against the invoice workspace
+    const auth = await authorizeWorkspaceAccess(req, invoice.workspaceId);
+    if (!auth.authorized) {
+      return NextResponse.json(
+        { success: false, error: auth.error, code: auth.code },
+        { status: auth.status }
+      );
+    }
+
+    const result = await getInvoice(id.trim(), auth.context.workspaceId);
 
     if (!result.ok) {
       return NextResponse.json(

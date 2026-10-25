@@ -13,7 +13,36 @@ datasource db {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Workspace & User
+// User & Authentication
+// SRS § 4: Workspace and user — owner and authorization boundary
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspaces Workspace[]
+  sessions   Session[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique // SHA-256 hash of the session token, never stored in plaintext
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace
 // SRS § 4: Workspace and clients — authorization boundary
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -25,6 +54,7 @@ model Workspace {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  owner      User                @relation(fields: [ownerId], references: [id])
   clients    Client[]
   invoices   Invoice[]
   approvals  Approval[]

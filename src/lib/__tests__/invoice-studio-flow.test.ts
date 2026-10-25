@@ -26,11 +26,14 @@ import { POST as paypalDraftRoute } from "@/app/api/invoices/[id]/paypal-draft/r
 import { db } from "@/lib/db/client";
 import * as paypalAdapter from "@/lib/paypal/adapter";
 import { CashPilotStatus, OperationAttemptState } from "@prisma/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Invoice Drafting Studio Full Journey", () => {
   const workspaceId = "demo-workspace-studio-flow";
   const userId = "demo-user-studio-flow";
   const clientId = "demo-client-studio-flow";
+
+  let session: { cookieHeader: string; sessionToken: string };
 
   const createDraftSpy = vi.spyOn(paypalAdapter, "createPayPalDraftInvoice");
   const sendInvoiceSpy = vi.spyOn(paypalAdapter, "sendPayPalInvoice");
@@ -38,6 +41,8 @@ describe("Invoice Drafting Studio Full Journey", () => {
   const cancelInvoiceSpy = vi.spyOn(paypalAdapter, "cancelPayPalInvoice");
 
   beforeAll(async () => {
+    session = createTestSession({ userId, workspaceId, email: "studio@example.com" });
+
     // Setup test workspace and client in PostgreSQL
     await db.workspace.upsert({
       where: { id: workspaceId },
@@ -73,8 +78,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         prompt: "Invoice Studio Acme for 10 hours of backend architecture at $150 per hour, net 14, 10% tax",
@@ -99,8 +103,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         clientId,
@@ -143,8 +146,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         actionType: "SEND_INVOICE",
@@ -165,8 +167,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         actionType: "SEND_INVOICE",
@@ -203,8 +204,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({ approvalId }),
     });
@@ -237,8 +237,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         clientId,
@@ -267,8 +266,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         actionType: "SEND_INVOICE",
@@ -293,8 +291,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({ approvalId: approveJson.data.approvalId }),
     });
@@ -315,8 +312,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         clientId,
@@ -345,8 +341,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({
         actionType: "SEND_INVOICE",
@@ -373,8 +368,7 @@ describe("Invoice Drafting Studio Full Journey", () => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-workspace-id": workspaceId,
-        "x-actor-id": userId,
+        Cookie: session.cookieHeader,
       },
       body: JSON.stringify({ approvalId: approveJson.data.approvalId }),
     });
@@ -397,5 +391,18 @@ describe("Invoice Drafting Studio Full Journey", () => {
     expect(extOp).not.toBeNull();
     expect(extOp?.attemptState).toBe(OperationAttemptState.UNKNOWN);
     expect(extOp?.isOutcomeUnknown).toBe(true);
+  });
+
+  it("rejects unauthenticated requests throughout the flow with 401 Unauthorized", async () => {
+    const unauthReq = new NextRequest("http://localhost:3000/api/invoices/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Test unauthenticated extract" }),
+    });
+
+    const res = await extractRoute(unauthReq);
+    expect(res.status).toBe(401);
+    const json = await res.json();
+    expect(json.code).toBe("UNAUTHORIZED");
   });
 });

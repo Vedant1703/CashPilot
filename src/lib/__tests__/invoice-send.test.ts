@@ -36,6 +36,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
   const workspaceA = "demo-workspace-send-a";
@@ -43,6 +44,9 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
   const ownerA = "demo-user-send-a";
   const ownerB = "demo-user-send-b";
   const clientA = "demo-client-send-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -53,6 +57,9 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
   const remindSpy = vi.spyOn(paypalAdapter, "sendPayPalReminder");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "send-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "send-b@example.com" });
+
     // Setup test workspaces and client in PostgreSQL
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -129,8 +136,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-workspace-id": workspaceA,
-        "x-actor-id": ownerA,
+        Cookie: sessionA.cookieHeader,
       },
       body: JSON.stringify({
         workspaceId: workspaceA,
@@ -165,8 +171,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_INVOICE",
@@ -209,8 +214,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -288,8 +292,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       }
     );
@@ -328,8 +331,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -370,8 +372,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -408,8 +409,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -447,8 +447,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -482,8 +481,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -520,8 +518,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -553,8 +550,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceB, // Different workspace!
-          "x-actor-id": ownerB,
+          Cookie: sessionB.cookieHeader,
         },
       }
     );
@@ -567,6 +563,35 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
     expect(res.status).toBe(403);
     expect(json.success).toBe(false);
     expect(json.code).toBe("CROSS_WORKSPACE_FORBIDDEN");
+    expect(sendInvoiceSpy).not.toHaveBeenCalled();
+  });
+
+  // 9b. Rejection on unauthenticated access
+  it("rejects unauthenticated request with 401 Unauthorized", async () => {
+    const inv = await createTestInvoice();
+    await approveTestInvoice(inv.id, inv.materialPayloadHash);
+
+    await db.invoice.update({
+      where: { id: inv.id },
+      data: { paypalInvoiceId: "INV2-UNAUTH" },
+    });
+
+    const req = new NextRequest(
+      `http://localhost:3000/api/invoices/${inv.id}/send`,
+      {
+        method: "POST",
+        headers: {},
+      }
+    );
+
+    const res = await sendRoute(req, {
+      params: Promise.resolve({ id: inv.id }),
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(401);
+    expect(json.success).toBe(false);
+    expect(json.code).toBe("UNAUTHORIZED");
     expect(sendInvoiceSpy).not.toHaveBeenCalled();
   });
 
@@ -595,8 +620,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -647,8 +671,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }
@@ -709,8 +732,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       }
     );
@@ -758,8 +780,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
       }
     );
@@ -857,8 +878,7 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
       {
         method: "POST",
         headers: {
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId: approval.approvalId }),
       }

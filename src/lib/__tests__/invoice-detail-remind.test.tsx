@@ -34,6 +34,7 @@ import {
 } from "@prisma/client";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 import { formatMoney } from "@/lib/money";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Human-Approved Invoice Reminders (Task 13C)", () => {
   const workspaceA = "demo-workspace-remind-flow-a";
@@ -41,6 +42,9 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
   const ownerA = "demo-user-remind-flow-a";
   const ownerB = "demo-user-remind-flow-b";
   const clientA = "demo-client-remind-flow-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -51,6 +55,9 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
   const cancelInvoiceSpy = vi.spyOn(paypalAdapter, "cancelPayPalInvoice");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "remindflow-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "remindflow-b@example.com" });
+
     // Setup test workspaces
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -390,8 +397,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_REMINDER",
@@ -423,8 +429,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -475,8 +480,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_REMINDER",
@@ -514,8 +518,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_REMINDER",
@@ -539,8 +542,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -584,8 +586,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_REMINDER",
@@ -603,8 +604,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -639,8 +639,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_REMINDER",
@@ -670,8 +669,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -703,8 +701,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -730,8 +727,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceB, // Cross workspace!
-          "x-actor-id": ownerB,
+          Cookie: sessionB.cookieHeader, // Cross workspace!
         },
       });
 
@@ -744,6 +740,24 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
       expect(remindJson.success).toBe(false);
       expect(remindJson.code).toBe("CROSS_WORKSPACE_FORBIDDEN");
       expect(remindInvoiceSpy).not.toHaveBeenCalled();
+    });
+
+    it("rejects unauthenticated request with 401 Unauthorized", async () => {
+      const inv = await createDatabaseInvoiceForReminder();
+
+      const remindReq = new NextRequest(`http://localhost:3000/api/invoices/${inv.id}/remind`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      const remindRes = await remindRoute(remindReq, {
+        params: Promise.resolve({ id: inv.id }),
+      });
+      expect(remindRes.status).toBe(401);
+      const remindJson = await remindRes.json();
+      expect(remindJson.code).toBe("UNAUTHORIZED");
     });
   });
 });

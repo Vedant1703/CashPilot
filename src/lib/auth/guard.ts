@@ -10,10 +10,13 @@
 
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db/client";
+import { getSessionFromRequest, AuthenticatedUser, AuthenticatedWorkspace } from "@/lib/auth/session";
 
 export interface AuthContext {
   actorId: string;
   workspaceId: string;
+  user: AuthenticatedUser;
+  workspace: AuthenticatedWorkspace | null;
 }
 
 export type AuthResult =
@@ -21,48 +24,56 @@ export type AuthResult =
   | { authorized: false; status: 401 | 403 | 404; error: string; code: string };
 
 /**
- * Authorizes a request for a target workspace.
- * Verifies that the actor has permissions for the workspace in the database.
+ * Authorizes a request for a target workspace based strictly on verified database session.
+ *
+ * Rules:
+ *   - Client headers (x-actor-id, x-user-id, x-workspace-id) are NEVER trusted as proof of authorization.
+ *   - Missing or invalid session -> 401 Unauthorized.
+ *   - Target workspace does not exist -> 404 Not Found.
+ *   - Target workspace does not belong to the authenticated user -> 403 Forbidden.
  */
 export async function authorizeWorkspaceAccess(
   req: NextRequest,
-  targetWorkspaceId: string
+  targetWorkspaceId?: string | null
 ): Promise<AuthResult> {
-  const actorHeader = req.headers.get("x-actor-id") || req.headers.get("x-user-id");
+  const session = await getSessionFromRequest(req);
 
-  // In production, actor must be explicitly provided via session/auth header.
-  // In development/test, default to demo-user-1 if no header is present, but honor explicit headers.
-  const actorId =
-    actorHeader && actorHeader.trim().length > 0
-      ? actorHeader.trim()
-      : process.env.NODE_ENV !== "production"
-      ? "demo-user-1"
-      : null;
-
-  if (!actorId) {
+  if (!session) {
     return {
       authorized: false,
       status: 401,
-      error: "Authentication required. Missing actor identity.",
+      error: "Authentication required. Please log in.",
       code: "UNAUTHORIZED",
     };
   }
 
+  // Resolve target workspace: explicitly requested workspace or authenticated primary workspace
+  const resolvedWorkspaceId = targetWorkspaceId?.trim() || session.workspace?.id;
+
+  if (!resolvedWorkspaceId) {
+    return {
+      authorized: false,
+      status: 404,
+      error: "Workspace not found.",
+      code: "WORKSPACE_NOT_FOUND",
+    };
+  }
+
   const workspace = await db.workspace.findUnique({
-    where: { id: targetWorkspaceId },
+    where: { id: resolvedWorkspaceId },
   });
 
   if (!workspace) {
     return {
       authorized: false,
       status: 404,
-      error: "Workspace not found",
+      error: "Workspace not found.",
       code: "WORKSPACE_NOT_FOUND",
     };
   }
 
-  // Enforce workspace ownership / membership
-  if (workspace.ownerId !== actorId) {
+  // Enforce workspace ownership: target workspace must belong to the session user
+  if (workspace.ownerId !== session.user.id) {
     return {
       authorized: false,
       status: 403,
@@ -74,8 +85,10 @@ export async function authorizeWorkspaceAccess(
   return {
     authorized: true,
     context: {
-      actorId,
-      workspaceId: targetWorkspaceId,
+      actorId: session.user.id,
+      workspaceId: resolvedWorkspaceId,
+      user: session.user,
+      workspace: session.workspace,
     },
   };
 }

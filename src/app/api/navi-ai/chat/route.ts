@@ -48,14 +48,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const workspaceId =
-    parsed.data.workspaceId ||
-    req.headers.get("x-workspace-id") ||
-    process.env.DEMO_WORKSPACE_ID ||
-    "demo-workspace-1";
-
-  // Authorize workspace access
-  const auth = await authorizeWorkspaceAccess(req, workspaceId);
+  // Authorize workspace access strictly via session
+  const auth = await authorizeWorkspaceAccess(req, parsed.data.workspaceId);
   if (!auth.authorized) {
     return NextResponse.json(
       { success: false, error: auth.error, code: auth.code },

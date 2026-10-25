@@ -14,6 +14,20 @@ const prisma = new PrismaClient();
 async function main() {
   console.log("🌱 Seeding CashPilot demo data...");
 
+  // ── Demo User ──────────────────────────────────────────────────────────────
+  const demoUser = await prisma.user.upsert({
+    where: { id: "demo-user-1" },
+    update: {},
+    create: {
+      id: "demo-user-1",
+      email: "demo@cashpilot.test",
+      name: "Demo User",
+      passwordHash: "!LOCKED:DEMO_USER_MANAGED_AUTH", // Machine-checkable locked credential; demo access implemented in later phase
+    },
+  });
+
+  console.log(`✅ Demo User: ${demoUser.name} (${demoUser.email})`);
+
   // ── Demo Workspace ─────────────────────────────────────────────────────────
   const workspace = await prisma.workspace.upsert({
     where: { id: "demo-workspace-1" },
@@ -21,7 +35,7 @@ async function main() {
     create: {
       id: "demo-workspace-1",
       name: "My Freelance Studio",
-      ownerId: "demo-user-1",
+      ownerId: demoUser.id,
       isDemo: true,
     },
   });

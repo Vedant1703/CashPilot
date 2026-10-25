@@ -21,12 +21,16 @@ import {
 import { aiInvoiceDraftSchema } from "@/lib/validations/invoice";
 import { POST as extractRoute } from "@/app/api/invoices/extract/route";
 import { db } from "@/lib/db/client";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("AI Invoice Extraction & Governance", () => {
   const testWorkspaceId = "demo-workspace-extract-test";
   const testClientId = "demo-client-extract-test";
+  let session: { cookieHeader: string };
 
   beforeAll(async () => {
+    session = await createTestSession({ userId: "demo-user-1", workspaceId: testWorkspaceId });
+
     await db.workspace.upsert({
       where: { id: testWorkspaceId },
       update: { ownerId: "demo-user-1" },
@@ -220,7 +224,7 @@ describe("AI Invoice Extraction & Governance", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": testWorkspaceId,
+          Cookie: session.cookieHeader,
         },
         body: JSON.stringify({
           prompt: "Bill Acme Corp for 10 hours at $150 per hour",
@@ -234,6 +238,25 @@ describe("AI Invoice Extraction & Governance", () => {
       expect(json.success).toBe(true);
       expect(json.data.extractedDraft).toBeDefined();
       expect(json.data.aiDraftId).toBeDefined();
+    });
+
+    it("rejects unauthenticated request with 401 Unauthorized", async () => {
+      const req = new NextRequest("http://localhost:3000/api/invoices/extract", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: "Bill Acme Corp for 10 hours at $150 per hour",
+        }),
+      });
+
+      const res = await extractRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(401);
+      expect(json.success).toBe(false);
+      expect(json.code).toBe("UNAUTHORIZED");
     });
   });
 

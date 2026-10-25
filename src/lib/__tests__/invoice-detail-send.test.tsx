@@ -33,6 +33,7 @@ import {
 } from "@prisma/client";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 import { formatMoney } from "@/lib/money";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Human-Approved Invoice Sending (Task 13B)", () => {
   const workspaceA = "demo-workspace-send-flow-a";
@@ -40,6 +41,9 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
   const ownerA = "demo-user-send-flow-a";
   const ownerB = "demo-user-send-flow-b";
   const clientA = "demo-client-send-flow-a";
+
+  let sessionA: { cookieHeader: string; sessionToken: string };
+  let sessionB: { cookieHeader: string; sessionToken: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -50,6 +54,9 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
   const cancelInvoiceSpy = vi.spyOn(paypalAdapter, "cancelPayPalInvoice");
 
   beforeAll(async () => {
+    sessionA = createTestSession({ userId: ownerA, email: "sendflow-a@example.com" });
+    sessionB = createTestSession({ userId: ownerB, email: "sendflow-b@example.com" });
+
     // Setup test workspaces
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -332,8 +339,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_INVOICE",
@@ -367,8 +373,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -449,8 +454,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_INVOICE",
@@ -474,8 +478,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -518,8 +521,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "SEND_INVOICE",
@@ -571,8 +573,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ actionType: "SEND_INVOICE", reviewedPayloadHash: hash }),
       });
@@ -599,8 +600,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -625,8 +625,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -662,8 +661,7 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceB,
-          "x-actor-id": ownerB,
+          Cookie: sessionB.cookieHeader,
         },
         body: JSON.stringify({}),
       });
@@ -676,6 +674,38 @@ describe("Human-Approved Invoice Sending (Task 13B)", () => {
       expect(sendRes.status).toBe(403);
       expect(sendJson.code).toBe("CROSS_WORKSPACE_FORBIDDEN");
       expect(sendInvoiceSpy).not.toHaveBeenCalled();
+    });
+
+    it("rejects unauthenticated request with 401 Unauthorized", async () => {
+      const inv = await db.invoice.create({
+        data: {
+          workspaceId: workspaceA,
+          clientId: clientA,
+          number: "INV-UNAUTH-SEND",
+          title: "Unauth Send Invoice",
+          currency: "USD",
+          subtotalMinorUnits: 10000,
+          totalMinorUnits: 10000,
+          dueDate: new Date("2026-11-04"),
+          cashpilotStatus: CashPilotStatus.DRAFT,
+          paypalInvoiceId: "INV2-UNAUTH-SEND",
+          paypalStatus: "DRAFT",
+        },
+      });
+      createdInvoiceIds.push(inv.id);
+
+      const sendReq = new NextRequest(`http://localhost:3000/api/invoices/${inv.id}/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+
+      const sendRes = await sendRoute(sendReq, {
+        params: Promise.resolve({ id: inv.id }),
+      });
+      expect(sendRes.status).toBe(401);
+      const sendJson = await sendRes.json();
+      expect(sendJson.code).toBe("UNAUTHORIZED");
     });
   });
 });

@@ -36,6 +36,7 @@ import {
 } from "@prisma/client";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 import { formatMoney } from "@/lib/money";
+import { createTestSession } from "@/lib/test-utils/auth";
 
 describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
   const workspaceA = "demo-workspace-cancel-flow-a";
@@ -43,6 +44,9 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
   const ownerA = "demo-user-cancel-flow-a";
   const ownerB = "demo-user-cancel-flow-b";
   const clientA = "demo-client-cancel-flow-a";
+
+  let sessionA: { cookieHeader: string };
+  let sessionB: { cookieHeader: string };
 
   const createdInvoiceIds: string[] = [];
 
@@ -53,6 +57,9 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
   const createDraftSpy = vi.spyOn(paypalAdapter, "createPayPalDraftInvoice");
 
   beforeAll(async () => {
+    sessionA = await createTestSession({ userId: ownerA, workspaceId: workspaceA });
+    sessionB = await createTestSession({ userId: ownerB, workspaceId: workspaceB });
+
     // Setup test workspaces
     await db.workspace.upsert({
       where: { id: workspaceA },
@@ -382,8 +389,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "CANCEL_INVOICE",
@@ -415,8 +421,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -471,8 +476,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "CANCEL_INVOICE",
@@ -510,8 +514,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "CANCEL_INVOICE",
@@ -535,8 +538,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -578,8 +580,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "CANCEL_INVOICE",
@@ -618,8 +619,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "CANCEL_INVOICE",
@@ -656,8 +656,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({
           actionType: "CANCEL_INVOICE",
@@ -687,8 +686,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -720,8 +718,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceA,
-          "x-actor-id": ownerA,
+          Cookie: sessionA.cookieHeader,
         },
         body: JSON.stringify({ approvalId }),
       });
@@ -747,8 +744,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-workspace-id": workspaceB, // Cross workspace!
-          "x-actor-id": ownerB,
+          Cookie: sessionB.cookieHeader, // Cross workspace!
         },
       });
 
@@ -760,6 +756,27 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
       expect(cancelRes.status).toBe(403);
       expect(cancelJson.success).toBe(false);
       expect(cancelJson.code).toBe("CROSS_WORKSPACE_FORBIDDEN");
+      expect(cancelInvoiceSpy).not.toHaveBeenCalled();
+    });
+
+    it("rejects unauthenticated request with 401 Unauthorized", async () => {
+      const inv = await createDatabaseInvoiceForCancel();
+
+      const cancelReq = new NextRequest(`http://localhost:3000/api/invoices/${inv.id}/cancel`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      const cancelRes = await cancelRoute(cancelReq, {
+        params: Promise.resolve({ id: inv.id }),
+      });
+      const cancelJson = await cancelRes.json();
+
+      expect(cancelRes.status).toBe(401);
+      expect(cancelJson.success).toBe(false);
+      expect(cancelJson.code).toBe("UNAUTHORIZED");
       expect(cancelInvoiceSpy).not.toHaveBeenCalled();
     });
   });
