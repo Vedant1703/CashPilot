@@ -4,6 +4,7 @@ export const openApiDocument = {
   info: { title: "CashPilot API", version: "0.1.0", description: "Local API contract. PayPal mutations are Sandbox-only and require explicit, hash-bound human approval. A successful send or reminder never establishes payment; only provider status synchronization can do that." },
   servers: [{ url: "/", description: "Current CashPilot deployment" }],
   tags: [
+    { name: "Authentication", description: "Session management, registration, login, logout, and judge demo access." },
     { name: "Invoices", description: "Local invoice creation and retrieval." },
     { name: "AI", description: "Untrusted-input invoice extraction and Ask Navi assistant; never executes PayPal operations." },
     { name: "Approvals", description: "Exact material-payload approvals." },
@@ -11,10 +12,46 @@ export const openApiDocument = {
     { name: "Documentation", description: "Interactive OpenAPI contract discovery." },
   ],
   paths: {
+    "/api/auth/signup": { post: {
+      tags: ["Authentication"], summary: "Register a new user account", operationId: "authSignup",
+      description: "Registers a new user, generates an empty isolated workspace (non-demo), creates a cryptographic database session, and attaches the HTTP-only cashpilot_session cookie.",
+      security: [],
+      "x-error-codes": { "400": ["INVALID_JSON", "VALIDATION_ERROR"], "409": ["EMAIL_ALREADY_EXISTS"], "500": ["INTERNAL_ERROR"] },
+      requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/SignupInput" }, example: { name: "Jane Doe", email: "jane@example.com", password: "Password123!", businessName: "Jane Design Studio" } } } },
+      responses: { "201": { description: "User registered and session created", content: { "application/json": { schema: { $ref: "#/components/schemas/AuthSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "409": { $ref: "#/components/responses/Conflict" }, "500": { $ref: "#/components/responses/InternalError" } },
+    } },
+    "/api/auth/login": { post: {
+      tags: ["Authentication"], summary: "Log in with email and password", operationId: "authLogin",
+      description: "Authenticates with credentials using constant-time verification, rejects locked or placeholder credentials (such as the demo account), issues a database session, and attaches the cashpilot_session HTTP-only cookie. Rate-limited to 10 attempts per minute per IP.",
+      security: [],
+      "x-error-codes": { "400": ["INVALID_JSON", "VALIDATION_ERROR"], "401": ["INVALID_CREDENTIALS"], "429": ["TOO_MANY_REQUESTS"], "500": ["INTERNAL_ERROR"] },
+      requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/LoginInput" }, example: { email: "jane@example.com", password: "Password123!" } } } },
+      responses: { "200": { description: "Authenticated and session created", content: { "application/json": { schema: { $ref: "#/components/schemas/AuthSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "429": { $ref: "#/components/responses/TooManyRequests" }, "500": { $ref: "#/components/responses/InternalError" } },
+    } },
+    "/api/auth/logout": { post: {
+      tags: ["Authentication"], summary: "Log out active session", operationId: "authLogout",
+      description: "Revokes the active database session corresponding to the cashpilot_session cookie and clears the session cookie.",
+      security: [{ SessionCookie: [] }],
+      responses: { "200": { description: "Session revoked successfully", content: { "application/json": { schema: { $ref: "#/components/schemas/LogoutSuccess" } } } }, "500": { $ref: "#/components/responses/InternalError" } },
+    } },
+    "/api/auth/me": { get: {
+      tags: ["Authentication"], summary: "Get current authenticated session context", operationId: "authMe",
+      description: "Returns the current authenticated user and primary workspace derived strictly from the server-verified session cookie.",
+      security: [{ SessionCookie: [] }],
+      "x-error-codes": { "401": ["UNAUTHORIZED"], "500": ["INTERNAL_ERROR"] },
+      responses: { "200": { description: "Current session context", content: { "application/json": { schema: { $ref: "#/components/schemas/AuthSuccess" } } } }, "401": { $ref: "#/components/responses/Unauthorized" }, "500": { $ref: "#/components/responses/InternalError" } },
+    } },
+    "/api/auth/demo": { post: {
+      tags: ["Authentication"], summary: "Judge and evaluator demo workspace access", operationId: "authDemo",
+      description: "Creates an authenticated session strictly bound to the canonical demo user (demo-user-1) and pre-seeded demo workspace (demo-workspace-1). Does not accept a caller-selected identity, role, or workspace ID. Fails closed if the database is unmigrated, if workspace ownership is unexpected, or if demo identity invariants are violated.",
+      security: [],
+      "x-error-codes": { "500": ["INTERNAL_ERROR", "DEMO_OWNERSHIP_MISMATCH", "DEMO_INVARIANT_VIOLATION"] },
+      responses: { "200": { description: "Demo session created and cookie attached", content: { "application/json": { schema: { $ref: "#/components/schemas/AuthSuccess" } } } }, "500": { $ref: "#/components/responses/InternalError" } },
+    } },
     "/api/navi-ai/chat": { post: {
       tags: ["AI"], summary: "Chat with Ask Navi assistant", operationId: "askNaviChat",
       description: "Conversational guided receivables assistant. Enforces workspace authorization and returns deterministic or AI-grounded explanations, prioritized invoice rankings, and contextual follow-up suggestions. Never performs financial modifications or executes PayPal operations.",
-      security: [{ ActorHeader: [] }],
+      security: [{ SessionCookie: [] }, { ActorHeader: [] }],
       "x-error-codes": { "400": ["INVALID_JSON", "VALIDATION_ERROR"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND"], "500": ["INTERNAL_ERROR"] },
       requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/NaviChatRequest" }, example: { message: "What's overdue?", workspaceId: "demo-workspace-1" } } } },
       responses: { "200": { description: "Grounded conversational answer with ranked invoices and suggested follow-ups", content: { "application/json": { schema: { $ref: "#/components/schemas/NaviChatSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "500": { $ref: "#/components/responses/InternalError" } },
@@ -27,6 +64,7 @@ export const openApiDocument = {
     "/api/invoices/extract": { post: {
       tags: ["AI"], summary: "Extract an editable invoice proposal", operationId: "extractInvoice",
       description: "Persists an AI draft after server-side schema validation. Uses Google Gemini only when configured; otherwise a deterministic extractor is used. Does not create an invoice or contact PayPal.",
+      security: [{ SessionCookie: [] }, { ActorHeader: [] }],
       "x-error-codes": { "400": ["INVALID_JSON", "VALIDATION_ERROR"], "500": ["EXTRACTION_FAILED"] },
       requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ExtractRequest" }, example: { prompt: "Bill Acme Corp for 10 hours of design work at $150, net 14", workspaceId: "demo-workspace-1" } } } },
       responses: { "200": { description: "Validated extraction proposal", content: { "application/json": { schema: { $ref: "#/components/schemas/ExtractionSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "500": { $ref: "#/components/responses/ExtractionFailed" } },
@@ -34,59 +72,131 @@ export const openApiDocument = {
     "/api/invoices/draft": { post: {
       tags: ["Invoices"], summary: "Create a local invoice draft", operationId: "createInvoiceDraft",
       description: "Calculates all totals server-side from integer minor units. This is a local database mutation only; it never contacts PayPal.",
+      security: [{ SessionCookie: [] }, { ActorHeader: [] }],
       "x-error-codes": { "400": ["INVALID_JSON", "BAD_REQUEST", "VALIDATION_ERROR", "TOTAL_MISMATCH", "SUBTOTAL_MISMATCH"], "404": ["NOT_FOUND"], "422": ["CALCULATION_ERROR"], "500": ["INTERNAL_ERROR"] },
       requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/InvoiceDraftInput" }, example: { clientId: "demo-client-1", title: "Design services", currency: "USD", taxRateBasisPoints: 1000, invoiceDate: "2026-10-22", dueDate: "2026-11-05", lineItems: [{ description: "Design consultation", quantity: 10, unitPriceMinorUnits: 15000 }] } } } },
       responses: { "201": { description: "Local draft created", content: { "application/json": { schema: { $ref: "#/components/schemas/InvoiceSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "404": { $ref: "#/components/responses/NotFound" }, "422": { $ref: "#/components/responses/CalculationError" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
     "/api/invoices/{id}": { get: {
       tags: ["Invoices"], summary: "Retrieve an invoice", operationId: "getInvoice",
+      security: [{ SessionCookie: [] }, { ActorHeader: [] }],
       parameters: [{ $ref: "#/components/parameters/InvoiceId" }, { name: "workspaceId", in: "query", required: false, schema: { type: "string" }, description: "Optional workspace selector; handler also accepts x-workspace-id or the demo workspace default." }],
       "x-error-codes": { "400": ["BAD_REQUEST"], "404": ["NOT_FOUND"], "500": ["INTERNAL_ERROR"] },
       responses: { "200": { description: "Invoice, activity history, and current material hash", content: { "application/json": { schema: { $ref: "#/components/schemas/InvoiceSuccess" } } } }, "400": { $ref: "#/components/responses/BadRequest" }, "404": { $ref: "#/components/responses/NotFound" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
     "/api/invoices/{id}/approve": { post: {
       tags: ["Approvals"], summary: "Approve an exact invoice action", operationId: "approveInvoice",
-      description: "Creates/returns an APPROVED approval only when reviewedPayloadHash equals the server-recomputed hash. Does not contact PayPal. In production, x-actor-id or x-user-id is required and must own the invoice workspace.", security: [{ ActorHeader: [] }],
+      description: "Creates/returns an APPROVED approval only when reviewedPayloadHash equals the server-recomputed hash. Does not contact PayPal. Requires a verified session or owner identity.", security: [{ SessionCookie: [] }, { ActorHeader: [] }],
       "x-error-codes": { "400": ["INVALID_JSON", "VALIDATION_ERROR", "INVALID_INVOICE_STATUS", "PAYPAL_INVOICE_REQUIRED"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND"], "409": ["STALE_PAYLOAD_HASH", "PROVIDER_STATE_AMBIGUOUS"], "500": ["INTERNAL_ERROR"] },
       parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/ApprovalRequest" }, example: { actionType: "SEND_INVOICE", reviewedPayloadHash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } } } },
       responses: { "200": { description: "Approved payload binding", content: { "application/json": { schema: { $ref: "#/components/schemas/ApprovalSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
     "/api/invoices/{id}/paypal-draft": { post: {
       tags: ["PayPal Sandbox"], summary: "Create a PayPal Sandbox invoice draft", operationId: "createPayPalDraft",
-      description: "MUTATION: may call PayPal Sandbox. Requires an approved SEND_INVOICE action. Creates a provider draft only; it does not send an invoice or mark it paid.", security: [{ ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ApprovalIdRequest" } } } },
+      description: "MUTATION: may call PayPal Sandbox. Requires an approved SEND_INVOICE action. Creates a provider draft only; it does not send an invoice or mark it paid.", security: [{ SessionCookie: [] }, { ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ApprovalIdRequest" } } } },
       "x-error-codes": { "400": ["BAD_REQUEST", "INVALID_JSON", "VALIDATION_ERROR", "APPROVAL_REQUIRED", "APPROVAL_EXPIRED", "INVALID_INVOICE_STATUS"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND"], "409": ["APPROVAL_STALE", "PENDING_UNKNOWN_OPERATION"], "502": ["PAYPAL_API_ERROR"], "503": ["PAYPAL_NOT_CONFIGURED"], "504": ["OPERATION_UNKNOWN_OUTCOME"], "500": ["INTERNAL_ERROR"] },
       responses: { "200": { description: "Existing provider draft returned", content: { "application/json": { schema: { $ref: "#/components/schemas/PayPalDraftSuccess" } } } }, "201": { description: "Provider draft created", content: { "application/json": { schema: { $ref: "#/components/schemas/PayPalDraftSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "502": { $ref: "#/components/responses/ProviderError" }, "503": { $ref: "#/components/responses/PayPalUnavailable" }, "504": { $ref: "#/components/responses/UnknownOutcome" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
     "/api/invoices/{id}/send": { post: {
       tags: ["PayPal Sandbox"], summary: "Send an approved PayPal Sandbox draft", operationId: "sendInvoice",
-      description: "MUTATION: may call PayPal Sandbox. Requires a pre-existing PayPal draft and approved SEND_INVOICE action. Confirmed send transitions to an unpaid workflow state, never PAID.", security: [{ ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ApprovalIdRequest" } } } },
+      description: "MUTATION: may call PayPal Sandbox. Requires a pre-existing PayPal draft and approved SEND_INVOICE action. Confirmed send transitions to an unpaid workflow state, never PAID.", security: [{ SessionCookie: [] }, { ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ApprovalIdRequest" } } } },
       "x-error-codes": { "400": ["BAD_REQUEST", "INVALID_JSON", "VALIDATION_ERROR", "APPROVAL_REQUIRED", "APPROVAL_EXPIRED", "APPROVAL_INVALIDATED", "APPROVAL_USED", "APPROVAL_NOT_APPROVED", "INVALID_APPROVAL_ACTION", "INVALID_INVOICE_STATE", "PAYPAL_DRAFT_REQUIRED", "PAYLOAD_SNAPSHOT_MISMATCH"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND", "APPROVAL_NOT_FOUND"], "409": ["APPROVAL_STALE", "PENDING_UNKNOWN_OPERATION", "OPERATION_IN_FLIGHT"], "502": ["PAYPAL_SEND_ERROR"], "503": ["PAYPAL_NOT_CONFIGURED"], "504": ["OPERATION_UNKNOWN_OUTCOME"], "500": ["DATABASE_PERSISTENCE_FAILED", "INTERNAL_ERROR"] },
       responses: { "200": { description: "Sent or idempotently already sent", content: { "application/json": { schema: { $ref: "#/components/schemas/SendSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "502": { $ref: "#/components/responses/ProviderError" }, "503": { $ref: "#/components/responses/PayPalUnavailable" }, "504": { $ref: "#/components/responses/UnknownOutcome" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
     "/api/invoices/{id}/remind": { post: {
       tags: ["PayPal Sandbox"], summary: "Send a PayPal Sandbox payment reminder", operationId: "sendInvoiceReminder",
-      description: "MUTATION: may call PayPal Sandbox. Requires approved SEND_REMINDER, a sent/unpaid invoice, and no successful reminder in the preceding 24 hours. It never changes payment status.", security: [{ ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ReminderRequest" }, example: { approvalId: "approval-id", subject: "Friendly reminder", note: "Please let us know if you need anything." } } } },
+      description: "MUTATION: may call PayPal Sandbox. Requires approved SEND_REMINDER, a sent/unpaid invoice, and no successful reminder in the preceding 24 hours. It never changes payment status.", security: [{ SessionCookie: [] }, { ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/ReminderRequest" }, example: { approvalId: "approval-id", subject: "Friendly reminder", note: "Please let us know if you need anything." } } } },
       "x-error-codes": { "400": ["BAD_REQUEST", "INVALID_JSON", "VALIDATION_ERROR", "APPROVAL_REQUIRED", "APPROVAL_EXPIRED", "APPROVAL_INVALIDATED", "APPROVAL_USED", "APPROVAL_NOT_APPROVED", "INVALID_APPROVAL_ACTION", "INVALID_INVOICE_STATE", "PAYPAL_DRAFT_REQUIRED", "PAYLOAD_SNAPSHOT_MISMATCH", "PAYLOAD_MISMATCH"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND", "APPROVAL_NOT_FOUND"], "409": ["APPROVAL_STALE", "PENDING_UNKNOWN_OPERATION", "OPERATION_IN_FLIGHT"], "429": ["REMINDER_RATE_LIMITED"], "502": ["PAYPAL_REMINDER_ERROR"], "503": ["PAYPAL_NOT_CONFIGURED"], "504": ["OPERATION_UNKNOWN_OUTCOME"], "500": ["DATABASE_PERSISTENCE_FAILED", "INTERNAL_ERROR"] },
       responses: { "200": { description: "Reminder confirmed by provider", content: { "application/json": { schema: { $ref: "#/components/schemas/ReminderSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "429": { $ref: "#/components/responses/ReminderRateLimited" }, "502": { $ref: "#/components/responses/ProviderError" }, "503": { $ref: "#/components/responses/PayPalUnavailable" }, "504": { $ref: "#/components/responses/UnknownOutcome" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
     "/api/invoices/{id}/cancel": { post: {
       tags: ["PayPal Sandbox"], summary: "Cancel a sent unpaid PayPal Sandbox invoice", operationId: "cancelInvoice",
-      description: "MUTATION: may call PayPal Sandbox. Requires approved CANCEL_INVOICE and a fresh, sent, unpaid provider state. Draft, paid, partial-payment, cancelled, stale, and ambiguous states are rejected.", security: [{ ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/CancelRequest" } } } },
+      description: "MUTATION: may call PayPal Sandbox. Requires approved CANCEL_INVOICE and a fresh, sent, unpaid provider state. Draft, paid, partial-payment, cancelled, stale, and ambiguous states are rejected.", security: [{ SessionCookie: [] }, { ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }], requestBody: { required: false, content: { "application/json": { schema: { $ref: "#/components/schemas/CancelRequest" } } } },
       "x-error-codes": { "400": ["BAD_REQUEST", "INVALID_JSON", "VALIDATION_ERROR", "APPROVAL_REQUIRED", "APPROVAL_EXPIRED", "APPROVAL_INVALIDATED", "APPROVAL_USED", "APPROVAL_NOT_APPROVED", "INVALID_APPROVAL_ACTION", "INVALID_INVOICE_STATE", "PAYPAL_INVOICE_REQUIRED", "PAYLOAD_SNAPSHOT_MISMATCH", "PAYLOAD_MISMATCH"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND", "APPROVAL_NOT_FOUND"], "409": ["APPROVAL_STALE", "PENDING_UNKNOWN_OPERATION", "OPERATION_IN_FLIGHT", "PROVIDER_STATE_AMBIGUOUS"], "502": ["PAYPAL_CANCEL_ERROR"], "503": ["PAYPAL_NOT_CONFIGURED"], "504": ["OPERATION_UNKNOWN_OUTCOME"], "500": ["DATABASE_PERSISTENCE_FAILED", "INTERNAL_ERROR"] },
       responses: { "200": { description: "Cancellation confirmed by provider", content: { "application/json": { schema: { $ref: "#/components/schemas/CancelSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "502": { $ref: "#/components/responses/ProviderError" }, "503": { $ref: "#/components/responses/PayPalUnavailable" }, "504": { $ref: "#/components/responses/UnknownOutcome" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
     "/api/invoices/{id}/sync": { post: {
       tags: ["PayPal Sandbox"], summary: "Synchronize invoice state from PayPal Sandbox", operationId: "syncInvoice",
-      description: "MUTATION: writes reconciliation/audit data and may call the read-only PayPal Sandbox invoice endpoint. Provider PAID evidence is required to transition CashPilot status to PAID; failures preserve the last known status as stale.", security: [{ ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }],
+      description: "MUTATION: writes reconciliation/audit data and may call the read-only PayPal Sandbox invoice endpoint. Provider PAID evidence is required to transition CashPilot status to PAID; failures preserve the last known status as stale.", security: [{ SessionCookie: [] }, { ActorHeader: [] }], parameters: [{ $ref: "#/components/parameters/InvoiceId" }],
       "x-error-codes": { "400": ["BAD_REQUEST"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND", "PROVIDER_INVOICE_NOT_FOUND"], "502": ["PAYPAL_GET_ERROR", "MALFORMED_PROVIDER_RESPONSE"], "503": ["PAYPAL_NOT_CONFIGURED"], "504": ["TIMEOUT"], "500": ["INTERNAL_ERROR"] },
       responses: { "200": { description: "Provider state reconciled, or local draft reported", content: { "application/json": { schema: { $ref: "#/components/schemas/SyncSuccess" } } } }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "502": { $ref: "#/components/responses/ProviderError" }, "503": { $ref: "#/components/responses/PayPalUnavailable" }, "504": { $ref: "#/components/responses/UnknownOutcome" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
   },
   components: {
-    securitySchemes: { ActorHeader: { type: "apiKey", in: "header", name: "x-actor-id", description: "Workspace owner identity used by guarded endpoints. In development/test, a missing value defaults to demo-user-1; production rejects it." } },
+    securitySchemes: {
+      SessionCookie: {
+        type: "apiKey",
+        in: "cookie",
+        name: "cashpilot_session",
+        description: "HTTP-only session cookie issued upon login, signup, or demo access. Browsers automatically attach it for same-origin requests.",
+      },
+      ActorHeader: {
+        type: "apiKey",
+        in: "header",
+        name: "x-actor-id",
+        description: "Legacy actor ID header; guarded endpoints now require a verified session cookie.",
+      },
+    },
     parameters: { InvoiceId: { name: "id", in: "path", required: true, schema: { type: "string", minLength: 1 }, description: "CashPilot invoice ID." } },
     schemas: {
       Error: { type: "object", required: ["success", "error", "code"], properties: { success: { type: "boolean", const: false }, error: { type: "string" }, code: { type: "string" } }, example: { success: false, error: "Invoice not found", code: "NOT_FOUND" } },
+      SignupInput: {
+        type: "object",
+        required: ["name", "email", "password", "businessName"],
+        properties: {
+          name: { type: "string", minLength: 2, maxLength: 100 },
+          email: { type: "string", format: "email" },
+          password: { type: "string", minLength: 8, maxLength: 128 },
+          businessName: { type: "string", minLength: 2, maxLength: 100 },
+        },
+      },
+      LoginInput: {
+        type: "object",
+        required: ["email", "password"],
+        properties: {
+          email: { type: "string", format: "email" },
+          password: { type: "string", minLength: 1 },
+        },
+      },
+      AuthSuccess: {
+        type: "object",
+        required: ["success", "data"],
+        properties: {
+          success: { type: "boolean", const: true },
+          data: {
+            type: "object",
+            required: ["user"],
+            properties: {
+              user: {
+                type: "object",
+                required: ["id", "email", "name"],
+                properties: {
+                  id: { type: "string" },
+                  email: { type: "string" },
+                  name: { type: "string" },
+                  createdAt: { type: "string", format: "date-time" },
+                },
+              },
+              workspace: {
+                type: ["object", "null"],
+                properties: {
+                  id: { type: "string" },
+                  name: { type: "string" },
+                  isDemo: { type: "boolean" },
+                },
+              },
+            },
+          },
+        },
+      },
+      LogoutSuccess: {
+        type: "object",
+        required: ["success", "message"],
+        properties: {
+          success: { type: "boolean", const: true },
+          message: { type: "string" },
+        },
+      },
       LineItemInput: { type: "object", required: ["description", "quantity", "unitPriceMinorUnits"], properties: { description: { type: "string", minLength: 1, maxLength: 1000 }, quantity: { type: "integer", minimum: 1, maximum: 10000 }, unitPriceMinorUnits: { type: "integer", minimum: 0, maximum: 99999999, description: "USD cents" } } },
       InvoiceDraftInput: { type: "object", required: ["clientId", "currency", "taxRateBasisPoints", "dueDate", "lineItems"], properties: { clientId: { type: "string" }, title: { type: "string", maxLength: 200 }, notes: { type: "string", maxLength: 2000 }, terms: { type: "string", maxLength: 2000 }, currency: { type: "string", enum: ["USD"] }, taxRateBasisPoints: { type: "integer", minimum: 0, maximum: 5000 }, invoiceDate: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }, dueDate: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }, lineItems: { type: "array", minItems: 1, maxItems: 50, items: { $ref: "#/components/schemas/LineItemInput" } }, workspaceId: { type: "string", description: "Optional route-level workspace selector." }, actorId: { type: "string", description: "Optional route-level actor selector." } } },
       ExtractRequest: { type: "object", required: ["prompt"], properties: { prompt: { type: "string", minLength: 3, maxLength: 3000 }, workspaceId: { type: "string" } } },
@@ -103,6 +213,6 @@ export const openApiDocument = {
       CancelSuccess: { type: "object", properties: { success: { type: "boolean", const: true }, data: { type: "object", properties: { operationId: { type: "string" }, invoiceId: { type: "string" }, paypalInvoiceId: { type: "string" }, previousStatus: { type: "string" }, currentStatus: { type: "string", const: "CANCELLED" }, previousPaypalStatus: { type: ["string", "null"] }, currentPaypalStatus: { type: "string" }, cancelledAt: { type: "string", format: "date-time" }, correlationId: { type: "string" } } } } },
       SyncSuccess: { type: "object", properties: { success: { type: "boolean", const: true }, data: { type: "object", properties: { invoiceId: { type: "string" }, paypalInvoiceId: { type: ["string", "null"] }, hasPaypalInvoice: { type: "boolean" }, previousPaypalStatus: { type: ["string", "null"] }, currentPaypalStatus: { type: ["string", "null"] }, previousCashpilotStatus: { type: "string" }, currentCashpilotStatus: { type: "string" }, statusChanged: { type: "boolean" }, isStale: { type: "boolean" }, reconciledOperationsCount: { type: "integer" }, lastSyncAt: { type: ["string", "null"], format: "date-time" }, correlationId: { type: "string" } } } } },
     },
-    responses: Object.fromEntries(["BadRequest", "ValidationError", "Unauthorized", "Forbidden", "NotFound", "Conflict", "CalculationError", "ProviderError", "PayPalUnavailable", "UnknownOutcome", "ReminderRateLimited", "ExtractionFailed", "InternalError"].map((name) => [name, { description: name, content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } }])),
+    responses: Object.fromEntries(["BadRequest", "ValidationError", "Unauthorized", "Forbidden", "NotFound", "Conflict", "CalculationError", "ProviderError", "PayPalUnavailable", "UnknownOutcome", "ReminderRateLimited", "ExtractionFailed", "InternalError", "TooManyRequests"].map((name) => [name, { description: name, content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } }])),
   },
 } as const;

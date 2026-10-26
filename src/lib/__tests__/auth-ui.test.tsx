@@ -38,6 +38,8 @@ describe("Authentication UI Components (Phase 2D.1)", () => {
       expect(html).toContain("Sign in to CashPilot");
       expect(html).toContain('href="/signup"');
       expect(html).toContain("Create an account");
+      expect(html).toContain("Explore Demo Workspace");
+      expect(html).toContain("Judge &amp; Evaluator Quick Access");
     });
   });
 
@@ -88,6 +90,7 @@ describe("Authentication UI Components (Phase 2D.1)", () => {
       );
 
       expect(html).toContain("My Freelance Studio");
+      expect(html).toContain("DEMO WORKSPACE");
       expect(html).toContain("PayPal Sandbox");
       expect(html).toContain("No real money moves");
       expect(html).not.toContain("Sign out");

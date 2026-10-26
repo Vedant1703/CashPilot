@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { AlertCircle, ArrowRight, Loader2, Lock, Mail, Eye, EyeOff } from "lucide-react";
+import { AlertCircle, ArrowRight, Loader2, Lock, Mail, Eye, EyeOff, Sparkles } from "lucide-react";
 
 export function LoginForm() {
   const router = useRouter();
@@ -11,6 +11,7 @@ export function LoginForm() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [demoLoading, setDemoLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -53,6 +54,29 @@ export function LoginForm() {
     } catch {
       setError("An unexpected network error occurred. Please try again.");
       setLoading(false);
+    }
+  };
+
+  const handleDemoAccess = async () => {
+    if (loading || demoLoading) return;
+    setDemoLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/auth/demo", { method: "POST" });
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.success) {
+        setError(data?.error || "Could not access demo workspace. Please try again.");
+        setDemoLoading(false);
+        return;
+      }
+
+      router.push("/");
+      router.refresh();
+    } catch {
+      setError("An unexpected network error occurred while accessing demo workspace.");
+      setDemoLoading(false);
     }
   };
 
@@ -142,7 +166,7 @@ export function LoginForm() {
         {/* Submit Button */}
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || demoLoading}
           className="w-full py-2.5 px-4 rounded-xl bg-[#0C7C61] hover:bg-[#096851] text-white text-sm font-semibold transition-all disabled:opacity-60 flex items-center justify-center gap-2 shadow-xs touch-target"
         >
           {loading ? (
@@ -159,8 +183,43 @@ export function LoginForm() {
         </button>
       </form>
 
+      {/* Clearly Labeled Judge / Evaluator Demo Access */}
+      <div className="pt-4 border-t border-[#E3E8EF] space-y-2.5">
+        <div className="flex items-center gap-2">
+          <div className="h-px flex-1 bg-[#E3E8EF]" />
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[#5E718D]">
+            Judge &amp; Evaluator Quick Access
+          </span>
+          <div className="h-px flex-1 bg-[#E3E8EF]" />
+        </div>
+
+        <button
+          type="button"
+          onClick={handleDemoAccess}
+          disabled={loading || demoLoading}
+          className="w-full py-2.5 px-4 rounded-xl border border-[#0C7C61]/30 bg-[#0C7C61]/5 hover:bg-[#0C7C61]/10 text-[#0C7C61] hover:text-[#096851] text-sm font-semibold transition-all disabled:opacity-60 flex items-center justify-center gap-2 touch-target"
+          id="explore-demo-workspace-btn"
+        >
+          {demoLoading ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin text-[#0C7C61]" />
+              <span>Entering Demo Workspace...</span>
+            </>
+          ) : (
+            <>
+              <Sparkles className="w-4 h-4 text-[#0C7C61]" />
+              <span>Explore Demo Workspace</span>
+            </>
+          )}
+        </button>
+
+        <p className="text-[11px] text-center text-[#5E718D] leading-relaxed">
+          Pre-seeded PayPal Sandbox evaluation workspace with sample invoices &amp; clients
+        </p>
+      </div>
+
       {/* Switch to Signup */}
-      <div className="pt-4 border-t border-[#E3E8EF] text-center text-xs text-[#5E718D]">
+      <div className="pt-3 border-t border-[#E3E8EF] text-center text-xs text-[#5E718D]">
         Don&apos;t have an account yet?{" "}
         <Link
           href="/signup"

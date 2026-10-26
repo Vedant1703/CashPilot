@@ -11,6 +11,11 @@ const requiredPaths = [
   "/api/invoices/{id}/cancel",
   "/api/invoices/{id}/sync",
   "/api/navi-ai/chat",
+  "/api/auth/signup",
+  "/api/auth/login",
+  "/api/auth/logout",
+  "/api/auth/me",
+  "/api/auth/demo",
   "/api/openapi.json",
 ];
 const paths = openApiDocument.paths as Record<string, unknown>;

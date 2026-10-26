@@ -1,5 +1,36 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const PERMITTED_TEST_DATABASE = "cashpilot_disposable_test";
+
+const rawTestDbUrl =
+  process.env.TEST_DATABASE_URL ||
+  "postgresql://cashpilot:cashpilot_dev_password@127.0.0.1:5433/cashpilot_disposable_test?schema=public";
+
+let parsed: URL;
+try {
+  parsed = new URL(rawTestDbUrl);
+} catch {
+  throw new Error("SAFETY VIOLATION: Malformed TEST_DATABASE_URL configured for Playwright E2E runs.");
+}
+
+if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+  throw new Error("SAFETY VIOLATION: TEST_DATABASE_URL must use 'postgresql:' or 'postgres:' scheme.");
+}
+
+const configuredDbName = parsed.pathname.replace(/^\//, "").split("?")[0];
+
+if (!configuredDbName) {
+  throw new Error("SAFETY VIOLATION: TEST_DATABASE_URL does not specify a database name.");
+}
+
+if (configuredDbName !== PERMITTED_TEST_DATABASE) {
+  throw new Error(
+    `SAFETY VIOLATION: Playwright test suite must target "${PERMITTED_TEST_DATABASE}", but configured database is "${configuredDbName}".`
+  );
+}
+
+const testDbUrl = rawTestDbUrl;
+
 /**
  * Playwright E2E Configuration for CashPilot AI
  *
@@ -47,5 +78,8 @@ export default defineConfig({
     url: "http://localhost:3000",
     reuseExistingServer: true,
     timeout: 60000,
+    env: {
+      DATABASE_URL: testDbUrl,
+    },
   },
 });

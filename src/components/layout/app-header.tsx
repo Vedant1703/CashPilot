@@ -117,6 +117,10 @@ export function AppHeader({
             {isDemo && (
               <>
                 <span className="text-white/40">·</span>
+                <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#34C79F]/20 text-[#34C79F] border border-[#34C79F]/40 tracking-wider">
+                  DEMO WORKSPACE
+                </span>
+                <span className="text-white/40">·</span>
                 <span className="text-[#34C79F] font-mono font-medium">PayPal Sandbox</span>
                 <span className="text-white/40">·</span>
                 <span className="text-white/70">No real money moves</span>
@@ -187,6 +191,7 @@ export function AppHeader({
               </div>
               <button
                 type="button"
+                id="desktop-sign-out-btn"
                 onClick={handleLogout}
                 disabled={isLoggingOut}
                 className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl border border-[#E3E8EF] hover:bg-[#FEF3F2] hover:border-[#FECDCA] hover:text-[#B42318] text-[#5E718D] text-xs font-medium transition-colors"
@@ -263,6 +268,7 @@ export function AppHeader({
             {user && (
               <button
                 type="button"
+                id="mobile-sign-out-btn"
                 onClick={handleLogout}
                 disabled={isLoggingOut}
                 className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-[#FECDCA] text-[#B42318] bg-[#FEF3F2] text-xs font-semibold"
