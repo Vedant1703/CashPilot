@@ -34,7 +34,7 @@ import {
 } from "@prisma/client";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 import { formatMoney } from "@/lib/money";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("Human-Approved Invoice Reminders (Task 13C)", () => {
   const workspaceA = "demo-workspace-remind-flow-a";
@@ -55,6 +55,12 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
   const cancelInvoiceSpy = vi.spyOn(paypalAdapter, "cancelPayPalInvoice");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "remindflow-a@example.com", name: "Remind Flow Owner A" },
+      { id: ownerB, email: "remindflow-b@example.com", name: "Remind Flow Owner B" },
+    ]);
+
     sessionA = createTestSession({ userId: ownerA, email: "remindflow-a@example.com" });
     sessionB = createTestSession({ userId: ownerB, email: "remindflow-b@example.com" });
 
@@ -96,6 +102,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Foreign-key safe cleanup
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -118,6 +125,7 @@ describe("Human-Approved Invoice Reminders (Task 13C)", () => {
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   beforeEach(() => {

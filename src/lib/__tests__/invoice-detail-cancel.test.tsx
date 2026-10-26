@@ -36,7 +36,7 @@ import {
 } from "@prisma/client";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 import { formatMoney } from "@/lib/money";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
   const workspaceA = "demo-workspace-cancel-flow-a";
@@ -57,6 +57,12 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
   const createDraftSpy = vi.spyOn(paypalAdapter, "createPayPalDraftInvoice");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "cancelflow-a@example.com", name: "Cancel Flow Owner A" },
+      { id: ownerB, email: "cancelflow-b@example.com", name: "Cancel Flow Owner B" },
+    ]);
+
     sessionA = await createTestSession({ userId: ownerA, workspaceId: workspaceA });
     sessionB = await createTestSession({ userId: ownerB, workspaceId: workspaceB });
 
@@ -98,6 +104,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Foreign-key safe cleanup
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -120,6 +127,7 @@ describe("Human-Approved Invoice Cancellation (Task 13D)", () => {
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   beforeEach(() => {

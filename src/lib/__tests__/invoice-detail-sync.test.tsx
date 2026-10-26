@@ -24,7 +24,7 @@ import { db } from "@/lib/db/client";
 import * as paypalAdapter from "@/lib/paypal/adapter";
 import { CashPilotStatus, OperationAttemptState } from "@prisma/client";
 import { formatMoney } from "@/lib/money";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
   const workspaceA = "demo-workspace-detail-a";
@@ -46,6 +46,12 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
   const cancelInvoiceSpy = vi.spyOn(paypalAdapter, "cancelPayPalInvoice");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "detail-a@example.com", name: "Detail Sync Owner A" },
+      { id: ownerB, email: "detail-b@example.com", name: "Detail Sync Owner B" },
+    ]);
+
     sessionA = createTestSession({ userId: ownerA, email: "detail-a@example.com" });
     sessionB = createTestSession({ userId: ownerB, email: "detail-b@example.com" });
 
@@ -88,6 +94,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Foreign key cleanup
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -110,6 +117,7 @@ describe("Invoice Detail & Safe Status Sync (Task 13A)", () => {
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   beforeEach(() => {

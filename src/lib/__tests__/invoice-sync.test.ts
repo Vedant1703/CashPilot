@@ -29,7 +29,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("PayPal Status Reconciliation & Sync API", () => {
   const workspaceA = "demo-workspace-sync-a";
@@ -49,6 +49,12 @@ describe("PayPal Status Reconciliation & Sync API", () => {
   const sendInvoiceSpy = vi.spyOn(paypalAdapter, "sendPayPalInvoice");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "sync-a@example.com", name: "Sync Owner A" },
+      { id: ownerB, email: "sync-b@example.com", name: "Sync Owner B" },
+    ]);
+
     sessionA = createTestSession({ userId: ownerA, email: "sync-a@example.com" });
     sessionB = createTestSession({ userId: ownerB, email: "sync-b@example.com" });
 
@@ -89,6 +95,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Clean up test data in foreign-key order
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -111,6 +118,7 @@ describe("PayPal Status Reconciliation & Sync API", () => {
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   beforeEach(() => {

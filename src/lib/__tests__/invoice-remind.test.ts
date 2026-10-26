@@ -38,7 +38,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
   const workspaceA = "demo-workspace-remind-a";
@@ -59,6 +59,12 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
   const getStatusSpy = vi.spyOn(paypalAdapter, "getPayPalInvoiceStatus");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "remind-a@example.com", name: "Remind Owner A" },
+      { id: ownerB, email: "remind-b@example.com", name: "Remind Owner B" },
+    ]);
+
     sessionA = createTestSession({ userId: ownerA, email: "remind-a@example.com" });
     sessionB = createTestSession({ userId: ownerB, email: "remind-b@example.com" });
 
@@ -99,6 +105,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Clean up test data
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -121,6 +128,7 @@ describe("PayPal Invoice Reminder API (POST /api/invoices/[id]/remind)", () => {
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   beforeEach(() => {

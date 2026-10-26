@@ -26,7 +26,7 @@ import { POST as paypalDraftRoute } from "@/app/api/invoices/[id]/paypal-draft/r
 import { db } from "@/lib/db/client";
 import * as paypalAdapter from "@/lib/paypal/adapter";
 import { CashPilotStatus, OperationAttemptState } from "@prisma/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("Invoice Drafting Studio Full Journey", () => {
   const workspaceId = "demo-workspace-studio-flow";
@@ -41,6 +41,8 @@ describe("Invoice Drafting Studio Full Journey", () => {
   const cancelInvoiceSpy = vi.spyOn(paypalAdapter, "cancelPayPalInvoice");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([{ id: userId, email: "studio@example.com", name: "Studio Flow Owner" }]);
     session = createTestSession({ userId, workspaceId, email: "studio@example.com" });
 
     // Setup test workspace and client in PostgreSQL
@@ -66,8 +68,17 @@ describe("Invoice Drafting Studio Full Journey", () => {
     });
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    await assertAllowedTestDatabase();
     vi.restoreAllMocks();
+    await db.activityEvent.deleteMany({ where: { workspaceId } });
+    await db.externalOperation.deleteMany({ where: { workspaceId } });
+    await db.approval.deleteMany({ where: { workspaceId } });
+    await db.invoiceLineItem.deleteMany({ where: { invoice: { workspaceId } } });
+    await db.invoice.deleteMany({ where: { workspaceId } });
+    await db.client.deleteMany({ where: { workspaceId } });
+    await db.workspace.deleteMany({ where: { id: workspaceId } });
+    await cleanupTestUsers([userId]);
   });
 
   it("completes full end-to-end journey from prompt to confirmed PayPal draft", async () => {

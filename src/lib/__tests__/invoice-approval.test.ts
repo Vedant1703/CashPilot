@@ -27,7 +27,7 @@ import { db } from "@/lib/db/client";
 import { computeMaterialPayloadHash } from "@/lib/services/invoice.service";
 import * as paypalAdapter from "@/lib/paypal/adapter";
 import { ApprovalStatus, ActivityEventType } from "@prisma/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("Secure Invoice Approval Gate", () => {
   const workspaceA = "demo-workspace-approval-a";
@@ -47,6 +47,12 @@ describe("Secure Invoice Approval Gate", () => {
   const getAccessTokenSpy = vi.spyOn(paypalAdapter, "getPayPalAccessToken");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "approval-a@example.com", name: "Approval Owner A" },
+      { id: ownerB, email: "approval-b@example.com", name: "Approval Owner B" },
+    ]);
+
     sessionA = createTestSession({ userId: ownerA, email: "approval-a@example.com" });
     sessionB = createTestSession({ userId: ownerB, email: "approval-b@example.com" });
 
@@ -87,6 +93,7 @@ describe("Secure Invoice Approval Gate", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Clean up created test data in foreign-key order
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -106,6 +113,7 @@ describe("Secure Invoice Approval Gate", () => {
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   // Helper to create a draft invoice via API route

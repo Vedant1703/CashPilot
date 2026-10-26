@@ -20,7 +20,7 @@ import { POST as draftRoute } from "@/app/api/invoices/draft/route";
 import { GET as getInvoiceRoute } from "@/app/api/invoices/[id]/route";
 import { db } from "@/lib/db/client";
 import * as paypalAdapter from "@/lib/paypal/adapter";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("Invoice Draft and Review APIs", () => {
   const workspaceId = "demo-workspace-1";
@@ -44,6 +44,7 @@ describe("Invoice Draft and Review APIs", () => {
   const sendPayPalSpy = vi.spyOn(paypalAdapter, "sendPayPalInvoice");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
     // Register verified session for demo-user-1
     const session = createTestSession({ actorId: "demo-user-1", workspaceId });
     authCookie = session.cookieHeader;
@@ -74,6 +75,7 @@ describe("Invoice Draft and Review APIs", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Clean up invoices created during tests
     if (createdInvoiceIds.length > 0) {
       await db.activityEvent.deleteMany({

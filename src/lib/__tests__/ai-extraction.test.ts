@@ -12,7 +12,7 @@
  * - POST /api/invoices/extract route validation and error handling
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { NextRequest } from "next/server";
 import {
   extractInvoiceDeterministically,
@@ -21,7 +21,7 @@ import {
 import { aiInvoiceDraftSchema } from "@/lib/validations/invoice";
 import { POST as extractRoute } from "@/app/api/invoices/extract/route";
 import { db } from "@/lib/db/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("AI Invoice Extraction & Governance", () => {
   const testWorkspaceId = "demo-workspace-extract-test";
@@ -29,6 +29,7 @@ describe("AI Invoice Extraction & Governance", () => {
   let session: { cookieHeader: string };
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
     session = await createTestSession({ userId: "demo-user-1", workspaceId: testWorkspaceId });
 
     await db.workspace.upsert({
@@ -51,6 +52,13 @@ describe("AI Invoice Extraction & Governance", () => {
         email: "billing@acmecorp.com",
       },
     });
+  });
+
+  afterAll(async () => {
+    await assertAllowedTestDatabase();
+    await db.aiDraft.deleteMany({ where: { workspaceId: testWorkspaceId } });
+    await db.client.deleteMany({ where: { workspaceId: testWorkspaceId } });
+    await db.workspace.deleteMany({ where: { id: testWorkspaceId } });
   });
 
   describe("Deterministic Pattern Extraction Engine", () => {

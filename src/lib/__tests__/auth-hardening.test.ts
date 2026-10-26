@@ -193,6 +193,34 @@ describe("Critical Authentication Hardening (Phase 2C.2)", () => {
 
     it("rate limits signup attempts after 5 requests from the same IP", async () => {
       vi.spyOn(db.user, "findUnique").mockResolvedValue(null);
+      vi.spyOn(db, "$transaction").mockImplementation(async (callback) => {
+        if (typeof callback === "function") {
+          return (callback as (tx: unknown) => Promise<unknown>)({
+            user: {
+              create: vi.fn().mockResolvedValue({
+                id: "usr-mock-rate",
+                email: "mock@exists.com",
+                name: "Mock User",
+                createdAt: new Date(),
+              }),
+            },
+            workspace: {
+              create: vi.fn().mockResolvedValue({
+                id: "ws-mock-rate",
+                name: "Mock Studio",
+                isDemo: false,
+              }),
+            },
+            session: {
+              create: vi.fn().mockResolvedValue({
+                id: "sess-mock-rate",
+                expiresAt: new Date(Date.now() + 604800000),
+              }),
+            },
+          });
+        }
+        return [];
+      });
 
       const ipHeaders = { "x-forwarded-for": "198.51.100.99" };
 

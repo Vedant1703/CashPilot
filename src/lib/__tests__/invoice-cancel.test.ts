@@ -40,7 +40,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("PayPal Invoice Cancellation API (POST /api/invoices/[id]/cancel)", () => {
   const workspaceA = "demo-workspace-cancel-a";
@@ -62,6 +62,12 @@ describe("PayPal Invoice Cancellation API (POST /api/invoices/[id]/cancel)", () 
   const getStatusSpy = vi.spyOn(paypalAdapter, "getPayPalInvoiceStatus");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "cancel-a@example.com", name: "Cancel Owner A" },
+      { id: ownerB, email: "cancel-b@example.com", name: "Cancel Owner B" },
+    ]);
+
     sessionA = createTestSession({ userId: ownerA, email: "cancel-a@example.com" });
     sessionB = createTestSession({ userId: ownerB, email: "cancel-b@example.com" });
 
@@ -102,6 +108,7 @@ describe("PayPal Invoice Cancellation API (POST /api/invoices/[id]/cancel)", () 
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Clean up test data
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -124,6 +131,7 @@ describe("PayPal Invoice Cancellation API (POST /api/invoices/[id]/cancel)", () 
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   beforeEach(() => {

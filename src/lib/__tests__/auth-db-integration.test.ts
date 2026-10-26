@@ -21,17 +21,51 @@ import {
   hashSessionToken,
   SESSION_TTL_SECONDS,
 } from "@/lib/auth/session";
+import {
+  ensureTestUsers,
+  cleanupTestUsers,
+  getTrackedFixtureUserIds,
+  FIXTURE_PASSWORD_PREFIX,
+} from "@/lib/test-utils/auth";
 
 describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
-  const disposableDbUrl = (process.env.DATABASE_URL || "").replace(
-    /\/cashpilot_dev(\?.*)?$/,
-    "/cashpilot_disposable_test$1"
-  );
+  const rawUrl = process.env.TEST_DATABASE_URL || process.env.DATABASE_URL;
+  if (!rawUrl) {
+    throw new Error("SAFETY VIOLATION: No test database URL configured in environment.");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error("SAFETY VIOLATION: Malformed database URL configured in test environment.");
+  }
+  if (parsed.protocol !== "postgresql:" && parsed.protocol !== "postgres:") {
+    throw new Error("SAFETY VIOLATION: Test database URL must use 'postgresql:' or 'postgres:' scheme.");
+  }
+  const configuredDbName = parsed.pathname.replace(/^\//, "").split("?")[0];
+  if (configuredDbName !== "cashpilot_disposable_test") {
+    throw new Error(
+      `SAFETY VIOLATION: Database-writing tests must target "cashpilot_disposable_test", but configured database is "${configuredDbName}".`
+    );
+  }
+  const disposableDbUrl = rawUrl;
 
   let prisma: PrismaClient;
   const testRunId = `test-${Date.now()}`;
   const createdUserIds: string[] = [];
+  const createdUserEmails: string[] = [];
   const createdWorkspaceIds: string[] = [];
+
+  const assertDbSafety = async () => {
+    const res = await prisma.$queryRaw<Array<{ current_database: string }>>`
+      SELECT current_database();
+    `;
+    if (res[0]?.current_database !== "cashpilot_disposable_test") {
+      throw new Error(
+        `SAFETY VIOLATION: Database operations must run exclusively on "cashpilot_disposable_test", but connected to "${res[0]?.current_database}".`
+      );
+    }
+  };
 
   beforeAll(async () => {
     prisma = new PrismaClient({
@@ -40,40 +74,86 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
 
-    // Verify connection to disposable DB
-    const res = await prisma.$queryRaw<Array<{ current_database: string }>>`
-      SELECT current_database();
-    `;
-    expect(res[0].current_database).toBe("cashpilot_disposable_test");
+    await assertDbSafety();
+  });
+
+  beforeEach(async () => {
+    await assertDbSafety();
   });
 
   afterAll(async () => {
-    // Clean up created records in reverse dependency order
-    if (createdWorkspaceIds.length > 0) {
-      await prisma.invoiceLineItem.deleteMany({
-        where: { invoice: { workspaceId: { in: createdWorkspaceIds } } },
-      });
-      await prisma.invoice.deleteMany({
-        where: { workspaceId: { in: createdWorkspaceIds } },
-      });
-      await prisma.client.deleteMany({
-        where: { workspaceId: { in: createdWorkspaceIds } },
-      });
-      await prisma.workspace.deleteMany({
-        where: { id: { in: createdWorkspaceIds } },
-      });
-    }
+    try {
+      // Must verify connected database immediately before any cleanup operations.
+      // If verification fails, throws immediately and aborts without executing any deletes.
+      await assertDbSafety();
 
-    if (createdUserIds.length > 0) {
-      await prisma.session.deleteMany({
-        where: { userId: { in: createdUserIds } },
-      });
-      await prisma.user.deleteMany({
-        where: { id: { in: createdUserIds } },
-      });
-    }
+      const PROTECTED_RECORD_IDS = new Set([
+        "demo-user-1",
+        "demo-user-2",
+        "demo-workspace-1",
+        "demo-workspace-2",
+        "demo-client-1",
+        "demo-client-2",
+      ]);
 
-    await prisma.$disconnect();
+      for (const id of createdWorkspaceIds) {
+        if (PROTECTED_RECORD_IDS.has(id)) {
+          throw new Error(`SAFETY VIOLATION: Attempted to clean up protected workspace ID "${id}".`);
+        }
+      }
+      for (const id of createdUserIds) {
+        if (PROTECTED_RECORD_IDS.has(id)) {
+          throw new Error(`SAFETY VIOLATION: Attempted to clean up protected user ID "${id}".`);
+        }
+      }
+
+      // Clean up only records created by this test run, with run-specific ownership predicates
+      if (createdWorkspaceIds.length > 0 && createdUserIds.length > 0) {
+        await prisma.invoiceLineItem.deleteMany({
+          where: {
+            invoice: {
+              workspaceId: { in: createdWorkspaceIds },
+              workspace: { ownerId: { in: createdUserIds } },
+            },
+          },
+        });
+        await prisma.invoice.deleteMany({
+          where: {
+            workspaceId: { in: createdWorkspaceIds },
+            workspace: { ownerId: { in: createdUserIds } },
+          },
+        });
+        await prisma.client.deleteMany({
+          where: {
+            workspaceId: { in: createdWorkspaceIds },
+            workspace: { ownerId: { in: createdUserIds } },
+          },
+        });
+        await prisma.workspace.deleteMany({
+          where: {
+            id: { in: createdWorkspaceIds },
+            ownerId: { in: createdUserIds },
+          },
+        });
+      }
+
+      if (createdUserIds.length > 0 && createdUserEmails.length > 0) {
+        await prisma.session.deleteMany({
+          where: {
+            userId: { in: createdUserIds },
+            user: { email: { in: createdUserEmails } },
+          },
+        });
+        await prisma.user.deleteMany({
+          where: {
+            id: { in: createdUserIds },
+            email: { in: createdUserEmails },
+          },
+        });
+      }
+    } finally {
+      await prisma.$disconnect();
+    }
   });
 
   it("atomically creates user, session, and empty non-demo workspace on signup", async () => {
@@ -113,6 +193,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
     });
 
     createdUserIds.push(result.user.id);
+    createdUserEmails.push(result.user.email);
     createdWorkspaceIds.push(result.workspace.id);
 
     // Verify in database
@@ -162,6 +243,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
     createdUserIds.push(user.id);
+    createdUserEmails.push(user.email);
 
     // 1. Password verification against database hash
     const dbUser = await prisma.user.findUnique({
@@ -213,6 +295,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
     createdUserIds.push(user.id);
+    createdUserEmails.push(user.email);
 
     // Insert an already expired session (past expiresAt)
     const expiredToken = generateSessionToken();
@@ -259,6 +342,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
     createdUserIds.push(userA.id);
+    createdUserEmails.push(userA.email);
 
     const wsA = await prisma.workspace.create({
       data: {
@@ -278,6 +362,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
     createdUserIds.push(userB.id);
+    createdUserEmails.push(userB.email);
 
     const wsB = await prisma.workspace.create({
       data: {
@@ -344,6 +429,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
     createdUserIds.push(legacyUser.id);
+    createdUserEmails.push(legacyUser.email);
 
     // Machine-check rejection of locked placeholders
     expect(isUsablePasswordHash(legacyUser.passwordHash)).toBe(false);
@@ -362,6 +448,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
     createdUserIds.push(demoLockedUser.id);
+    createdUserEmails.push(demoLockedUser.email);
 
     expect(isUsablePasswordHash(demoLockedUser.passwordHash)).toBe(false);
     const demoVerified = await verifyPassword("DemoPassword123!", demoLockedUser.passwordHash);
@@ -379,6 +466,7 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
       },
     });
     createdUserIds.push(tempUser.id);
+    createdUserEmails.push(tempUser.email);
 
     const ws = await prisma.workspace.create({
       data: {
@@ -424,5 +512,84 @@ describe("PostgreSQL-Backed Auth Integration (Disposable DB)", () => {
         where: { id: tempUser.id },
       })
     ).rejects.toThrow(); // Foreign key violation (RESTRICT)
+  });
+
+  it("verifies ensureTestUsers and cleanupTestUsers isolate fixtures and never delete pre-existing records", async () => {
+    const fixtureUserId = `fixture-${testRunId}`;
+    const fixtureEmail = `fixture-${testRunId}@example.com`;
+
+    // 1. Calling ensureTestUsers creates the user and tracks it
+    await ensureTestUsers([{ id: fixtureUserId, email: fixtureEmail, name: "Fixture Safety User" }]);
+    expect(getTrackedFixtureUserIds()).toContain(fixtureUserId);
+
+    const createdInDb = await prisma.user.findUnique({ where: { id: fixtureUserId } });
+    expect(createdInDb).not.toBeNull();
+    expect(createdInDb?.email).toBe(fixtureEmail);
+
+    // 2. Ensuring demo-user-1 does NOT track it
+    await ensureTestUsers([{ id: "demo-user-1" }]);
+    expect(getTrackedFixtureUserIds()).not.toContain("demo-user-1");
+
+    // 3. Calling cleanupTestUsers on demo-user-1 does NOT delete it
+    await cleanupTestUsers(["demo-user-1"]);
+    const demoStillExists = await prisma.user.findUnique({ where: { id: "demo-user-1" } });
+    expect(demoStillExists).not.toBeNull();
+
+    // 4. Mismatched email on an existing user ID throws SAFETY VIOLATION
+    await expect(
+      ensureTestUsers([{ id: fixtureUserId, email: "mismatch@example.com" }])
+    ).rejects.toThrow(/SAFETY VIOLATION/);
+
+    // 5. Attempting to ensure a user whose email conflicts with a different user throws SAFETY VIOLATION
+    await expect(
+      ensureTestUsers([{ id: `other-${testRunId}`, email: fixtureEmail }])
+    ).rejects.toThrow(/SAFETY VIOLATION/);
+
+    // 6. Cleanup deletes only the fixture created by this run and untracks it
+    await cleanupTestUsers([fixtureUserId]);
+    expect(getTrackedFixtureUserIds()).not.toContain(fixtureUserId);
+
+    const deletedFromDb = await prisma.user.findUnique({ where: { id: fixtureUserId } });
+    expect(deletedFromDb).toBeNull();
+
+    // 7. Verify a fixture from a DIFFERENT run is never tracked, modified, or deleted by this run
+    const otherRunUserId = `other-run-${testRunId}`;
+    const otherRunEmail = `other-run-${testRunId}@example.com`;
+    const otherRunHash = `${FIXTURE_PASSWORD_PREFIX}run_other_worker_999`;
+
+    await prisma.user.create({
+      data: {
+        id: otherRunUserId,
+        email: otherRunEmail,
+        name: "Other Run Fixture",
+        passwordHash: otherRunHash,
+      },
+    });
+
+    try {
+      // ensureTestUsers sees it exists with a valid locked fixture hash from another run
+      await ensureTestUsers([{ id: otherRunUserId, email: otherRunEmail }]);
+      // Must NOT be tracked for deletion by this run
+      expect(getTrackedFixtureUserIds()).not.toContain(otherRunUserId);
+
+      // cleanupTestUsers must NOT delete the other run's fixture
+      await cleanupTestUsers([otherRunUserId]);
+      const otherRunUserStillExists = await prisma.user.findUnique({ where: { id: otherRunUserId } });
+      expect(otherRunUserStillExists).not.toBeNull();
+      expect(otherRunUserStillExists?.passwordHash).toBe(otherRunHash);
+    } finally {
+      // Must verify connected database immediately before any cleanup operations
+      await assertDbSafety();
+
+      // Clean it up directly in a finally block so failures cannot leave test-created records behind.
+      // Verify its ID and run-specific email/hash before deleting it.
+      await prisma.user.deleteMany({
+        where: {
+          id: otherRunUserId,
+          email: otherRunEmail,
+          passwordHash: otherRunHash,
+        },
+      });
+    }
   });
 });

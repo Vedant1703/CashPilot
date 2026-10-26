@@ -13,7 +13,7 @@
  * - Authorization and validation on POST /api/navi-ai/chat
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { NextRequest } from "next/server";
 import {
   checkSafetyRefusal,
@@ -22,7 +22,7 @@ import {
 import { POST as chatRoute } from "@/app/api/navi-ai/chat/route";
 import { db } from "@/lib/db/client";
 import { CashPilotStatus } from "@prisma/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("Ask Navi Guided Chatbot & Safety Governance", () => {
   const testWorkspaceId = "demo-workspace-ask-navi-test";
@@ -33,6 +33,7 @@ describe("Ask Navi Guided Chatbot & Safety Governance", () => {
   let sessionIntruder: { cookieHeader: string; sessionToken: string };
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
     sessionDemo = createTestSession({ userId: "demo-user-1", email: "demo@example.com" });
     sessionIntruder = createTestSession({ userId: "unauthorized-intruder", email: "intruder@example.com" });
 
@@ -88,6 +89,15 @@ describe("Ask Navi Guided Chatbot & Safety Governance", () => {
         notes: null,
       },
     });
+  });
+
+  afterAll(async () => {
+    await assertAllowedTestDatabase();
+    await db.activityEvent.deleteMany({ where: { workspaceId: testWorkspaceId } });
+    await db.invoiceLineItem.deleteMany({ where: { invoiceId: testInvoiceId } });
+    await db.invoice.deleteMany({ where: { workspaceId: testWorkspaceId } });
+    await db.client.deleteMany({ where: { workspaceId: testWorkspaceId } });
+    await db.workspace.deleteMany({ where: { id: testWorkspaceId } });
   });
 
   describe("Safety Refusals (AGENTS.md & Invariants)", () => {

@@ -14,6 +14,9 @@ import { getCurrentSession, requireAuth } from "@/lib/auth/server-session";
 import {
   createTestSession,
   clearTestSessions,
+  ensureTestUsers,
+  cleanupTestUsers,
+  assertAllowedTestDatabase,
 } from "@/lib/test-utils/auth";
 import { revokeSession, verifySessionToken } from "@/lib/auth/session";
 import { db } from "@/lib/db/client";
@@ -119,6 +122,12 @@ describe("Server-Side Page Protection & Workspace Isolation (Phase 2D.1)", () =>
     const invoiceBId = "inv-isolation-b-1";
 
     beforeEach(async () => {
+      await assertAllowedTestDatabase();
+      await ensureTestUsers([
+        { id: userA, email: "user-a@isolation.test", name: "User A" },
+        { id: userB, email: "user-b@isolation.test", name: "User B" },
+      ]);
+
       // Create user B workspace, client, and invoice in database
       await db.workspace.upsert({
         where: { id: workspaceB },
@@ -165,6 +174,7 @@ describe("Server-Side Page Protection & Workspace Isolation (Phase 2D.1)", () =>
     });
 
     afterEach(async () => {
+      await assertAllowedTestDatabase();
       await db.invoiceLineItem.deleteMany({
         where: { invoice: { workspaceId: workspaceB } },
       });
@@ -177,6 +187,7 @@ describe("Server-Side Page Protection & Workspace Isolation (Phase 2D.1)", () =>
       await db.workspace.deleteMany({
         where: { id: { in: [workspaceA, workspaceB] } },
       });
+      await cleanupTestUsers([userA, userB]);
     });
 
     it("verifies User A cannot access User B's invoice (server-side boundary check)", async () => {
@@ -222,6 +233,11 @@ describe("Server-Side Page Protection & Workspace Isolation (Phase 2D.1)", () =>
     const newWorkspaceId = "ws-new-empty-account";
 
     beforeEach(async () => {
+      await assertAllowedTestDatabase();
+      await ensureTestUsers([
+        { id: newUserId, email: "new-user@empty.test", name: "New User" },
+      ]);
+
       await db.workspace.upsert({
         where: { id: newWorkspaceId },
         update: { ownerId: newUserId },
@@ -235,9 +251,11 @@ describe("Server-Side Page Protection & Workspace Isolation (Phase 2D.1)", () =>
     });
 
     afterEach(async () => {
+      await assertAllowedTestDatabase();
       await db.workspace.deleteMany({
         where: { id: newWorkspaceId },
       });
+      await cleanupTestUsers([newUserId]);
     });
 
     it("verifies a new workspace query returns 0 invoices and 0 clients without leaking demo data", async () => {

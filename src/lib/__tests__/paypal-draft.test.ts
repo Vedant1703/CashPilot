@@ -34,7 +34,7 @@ import {
   ActivityEventType,
   CashPilotStatus,
 } from "@prisma/client";
-import { createTestSession } from "@/lib/test-utils/auth";
+import { createTestSession, ensureTestUsers, cleanupTestUsers, assertAllowedTestDatabase } from "@/lib/test-utils/auth";
 
 describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
   const workspaceA = "demo-workspace-paypal-a";
@@ -54,6 +54,12 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
   const getStatusSpy = vi.spyOn(paypalAdapter, "getPayPalInvoiceStatus");
 
   beforeAll(async () => {
+    await assertAllowedTestDatabase();
+    await ensureTestUsers([
+      { id: ownerA, email: "paypal-a@example.com", name: "PayPal Owner A" },
+      { id: ownerB, email: "paypal-b@example.com", name: "PayPal Owner B" },
+    ]);
+
     sessionA = createTestSession({ userId: ownerA, email: "paypal-a@example.com" });
     sessionB = createTestSession({ userId: ownerB, email: "paypal-b@example.com" });
 
@@ -94,6 +100,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
   });
 
   afterAll(async () => {
+    await assertAllowedTestDatabase();
     // Clean up test data in foreign-key order
     await db.activityEvent.deleteMany({
       where: { workspaceId: { in: [workspaceA, workspaceB] } },
@@ -116,6 +123,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
     await db.workspace.deleteMany({
       where: { id: { in: [workspaceA, workspaceB] } },
     });
+    await cleanupTestUsers([ownerA, ownerB]);
   });
 
   beforeEach(() => {
