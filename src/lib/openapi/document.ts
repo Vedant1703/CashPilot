@@ -10,6 +10,7 @@ export const openApiDocument = {
     { name: "Approvals", description: "Exact material-payload approvals." },
     { name: "PayPal Sandbox", description: "Provider operations. These may contact PayPal Sandbox when invoked." },
     { name: "Documentation", description: "Interactive OpenAPI contract discovery." },
+    { name: "Clients", description: "Workspace-isolated client recipient management." },
   ],
   paths: {
     "/api/auth/signup": { post: {
@@ -121,6 +122,51 @@ export const openApiDocument = {
       "x-error-codes": { "400": ["BAD_REQUEST"], "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND", "PROVIDER_INVOICE_NOT_FOUND"], "502": ["PAYPAL_GET_ERROR", "MALFORMED_PROVIDER_RESPONSE"], "503": ["PAYPAL_NOT_CONFIGURED"], "504": ["TIMEOUT"], "500": ["INTERNAL_ERROR"] },
       responses: { "200": { description: "Provider state reconciled, or local draft reported", content: { "application/json": { schema: { $ref: "#/components/schemas/SyncSuccess" } } } }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "502": { $ref: "#/components/responses/ProviderError" }, "503": { $ref: "#/components/responses/PayPalUnavailable" }, "504": { $ref: "#/components/responses/UnknownOutcome" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
+    "/api/clients": {
+      get: {
+        tags: ["Clients"], summary: "List and search workspace clients", operationId: "listClients",
+        description: "Returns clients strictly within the authenticated workspace. Supports optional case-insensitive search filtering across name, email, and company.",
+        security: [{ SessionCookie: [] }],
+        parameters: [{ name: "search", in: "query", required: false, schema: { type: "string", maxLength: 100 }, description: "Optional search term." }],
+        "x-error-codes": { "400": ["VALIDATION_ERROR"], "401": ["UNAUTHORIZED"], "500": ["INTERNAL_ERROR"] },
+        responses: { "200": { description: "List of workspace clients", content: { "application/json": { schema: { $ref: "#/components/schemas/ClientListSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "500": { $ref: "#/components/responses/InternalError" } },
+      },
+      post: {
+        tags: ["Clients"], summary: "Create a new workspace client", operationId: "createClient",
+        description: "Creates a new client within the caller's authenticated workspace. Always forces isDemo: false.",
+        security: [{ SessionCookie: [] }],
+        "x-error-codes": { "400": ["INVALID_JSON", "BAD_REQUEST", "VALIDATION_ERROR"], "401": ["UNAUTHORIZED"], "500": ["INTERNAL_ERROR"] },
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/CreateClientInput" }, example: { name: "Acme Corp", email: "billing@acme.com", company: "Acme Industries", phone: "+1-555-0100" } } } },
+        responses: { "201": { description: "Client created successfully", content: { "application/json": { schema: { $ref: "#/components/schemas/ClientSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "500": { $ref: "#/components/responses/InternalError" } },
+      },
+    },
+    "/api/clients/{id}": {
+      get: {
+        tags: ["Clients"], summary: "Retrieve client by ID", operationId: "getClient",
+        description: "Retrieves a client by ID. Fails closed with 404 if the client does not exist or belongs to another workspace.",
+        security: [{ SessionCookie: [] }],
+        parameters: [{ $ref: "#/components/parameters/ClientId" }],
+        "x-error-codes": { "400": ["BAD_REQUEST"], "401": ["UNAUTHORIZED"], "404": ["NOT_FOUND"], "500": ["INTERNAL_ERROR"] },
+        responses: { "200": { description: "Client details", content: { "application/json": { schema: { $ref: "#/components/schemas/ClientSuccess" } } } }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "404": { $ref: "#/components/responses/NotFound" }, "500": { $ref: "#/components/responses/InternalError" } },
+      },
+      patch: {
+        tags: ["Clients"], summary: "Update client profile", operationId: "updateClient",
+        description: "Updates client details. Requires at least one field and enforces workspace isolation.",
+        security: [{ SessionCookie: [] }],
+        parameters: [{ $ref: "#/components/parameters/ClientId" }],
+        requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/UpdateClientInput" }, example: { company: "Acme Global Corp" } } } },
+        "x-error-codes": { "400": ["INVALID_JSON", "BAD_REQUEST", "VALIDATION_ERROR"], "401": ["UNAUTHORIZED"], "404": ["NOT_FOUND"], "500": ["INTERNAL_ERROR"] },
+        responses: { "200": { description: "Client updated successfully", content: { "application/json": { schema: { $ref: "#/components/schemas/ClientSuccess" } } } }, "400": { $ref: "#/components/responses/ValidationError" }, "401": { $ref: "#/components/responses/Unauthorized" }, "404": { $ref: "#/components/responses/NotFound" }, "500": { $ref: "#/components/responses/InternalError" } },
+      },
+      delete: {
+        tags: ["Clients"], summary: "Delete unreferenced client", operationId: "deleteClient",
+        description: "Deletes a client only if they have zero associated invoices. Returns 409 if referenced by any invoices to preserve audit integrity.",
+        security: [{ SessionCookie: [] }],
+        parameters: [{ $ref: "#/components/parameters/ClientId" }],
+        "x-error-codes": { "400": ["BAD_REQUEST"], "401": ["UNAUTHORIZED"], "404": ["NOT_FOUND"], "409": ["CANNOT_DELETE_CLIENT_WITH_INVOICES"], "500": ["INTERNAL_ERROR"] },
+        responses: { "200": { description: "Client deleted successfully", content: { "application/json": { schema: { $ref: "#/components/schemas/ClientDeleteSuccess" } } } }, "400": { $ref: "#/components/responses/BadRequest" }, "401": { $ref: "#/components/responses/Unauthorized" }, "404": { $ref: "#/components/responses/NotFound" }, "409": { $ref: "#/components/responses/Conflict" }, "500": { $ref: "#/components/responses/InternalError" } },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -137,7 +183,10 @@ export const openApiDocument = {
         description: "Legacy actor ID header; guarded endpoints now require a verified session cookie.",
       },
     },
-    parameters: { InvoiceId: { name: "id", in: "path", required: true, schema: { type: "string", minLength: 1 }, description: "CashPilot invoice ID." } },
+    parameters: {
+      InvoiceId: { name: "id", in: "path", required: true, schema: { type: "string", minLength: 1 }, description: "CashPilot invoice ID." },
+      ClientId: { name: "id", in: "path", required: true, schema: { type: "string", minLength: 1 }, description: "CashPilot client ID." },
+    },
     schemas: {
       Error: { type: "object", required: ["success", "error", "code"], properties: { success: { type: "boolean", const: false }, error: { type: "string" }, code: { type: "string" } }, example: { success: false, error: "Invoice not found", code: "NOT_FOUND" } },
       SignupInput: {
@@ -212,6 +261,77 @@ export const openApiDocument = {
       ReminderSuccess: { type: "object", properties: { success: { type: "boolean", const: true }, data: { type: "object", properties: { operationId: { type: "string" }, invoiceId: { type: "string" }, paypalInvoiceId: { type: "string" }, recipientEmail: { type: "string", format: "email" }, reminded: { type: "boolean", const: true }, remindedAt: { type: "string", format: "date-time" }, correlationId: { type: "string" } } } } },
       CancelSuccess: { type: "object", properties: { success: { type: "boolean", const: true }, data: { type: "object", properties: { operationId: { type: "string" }, invoiceId: { type: "string" }, paypalInvoiceId: { type: "string" }, previousStatus: { type: "string" }, currentStatus: { type: "string", const: "CANCELLED" }, previousPaypalStatus: { type: ["string", "null"] }, currentPaypalStatus: { type: "string" }, cancelledAt: { type: "string", format: "date-time" }, correlationId: { type: "string" } } } } },
       SyncSuccess: { type: "object", properties: { success: { type: "boolean", const: true }, data: { type: "object", properties: { invoiceId: { type: "string" }, paypalInvoiceId: { type: ["string", "null"] }, hasPaypalInvoice: { type: "boolean" }, previousPaypalStatus: { type: ["string", "null"] }, currentPaypalStatus: { type: ["string", "null"] }, previousCashpilotStatus: { type: "string" }, currentCashpilotStatus: { type: "string" }, statusChanged: { type: "boolean" }, isStale: { type: "boolean" }, reconciledOperationsCount: { type: "integer" }, lastSyncAt: { type: ["string", "null"], format: "date-time" }, correlationId: { type: "string" } } } } },
+      CreateClientInput: {
+        type: "object",
+        required: ["name", "email"],
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 100 },
+          email: { type: "string", format: "email", maxLength: 255 },
+          company: { type: ["string", "null"], maxLength: 100 },
+          phone: { type: ["string", "null"], maxLength: 50 },
+          notes: { type: ["string", "null"], maxLength: 1000 },
+        },
+      },
+      UpdateClientInput: {
+        type: "object",
+        properties: {
+          name: { type: "string", minLength: 1, maxLength: 100 },
+          email: { type: "string", format: "email", maxLength: 255 },
+          company: { type: ["string", "null"], maxLength: 100 },
+          phone: { type: ["string", "null"], maxLength: 50 },
+          notes: { type: ["string", "null"], maxLength: 1000 },
+        },
+      },
+      ClientSuccess: {
+        type: "object",
+        required: ["success", "data"],
+        properties: {
+          success: { type: "boolean", const: true },
+          data: {
+            type: "object",
+            required: ["id", "workspaceId", "name", "email", "isDemo", "createdAt", "updatedAt"],
+            properties: {
+              id: { type: "string" },
+              workspaceId: { type: "string" },
+              name: { type: "string" },
+              email: { type: "string" },
+              company: { type: ["string", "null"] },
+              phone: { type: ["string", "null"] },
+              notes: { type: ["string", "null"] },
+              isDemo: { type: "boolean" },
+              createdAt: { type: "string", format: "date-time" },
+              updatedAt: { type: "string", format: "date-time" },
+              _count: { type: "object", properties: { invoices: { type: "integer" } } },
+            },
+          },
+        },
+      },
+      ClientListSuccess: {
+        type: "object",
+        required: ["success", "data"],
+        properties: {
+          success: { type: "boolean", const: true },
+          data: {
+            type: "array",
+            items: { $ref: "#/components/schemas/ClientSuccess/properties/data" },
+          },
+        },
+      },
+      ClientDeleteSuccess: {
+        type: "object",
+        required: ["success", "data"],
+        properties: {
+          success: { type: "boolean", const: true },
+          data: {
+            type: "object",
+            required: ["id", "deleted"],
+            properties: {
+              id: { type: "string" },
+              deleted: { type: "boolean", const: true },
+            },
+          },
+        },
+      },
     },
     responses: Object.fromEntries(["BadRequest", "ValidationError", "Unauthorized", "Forbidden", "NotFound", "Conflict", "CalculationError", "ProviderError", "PayPalUnavailable", "UnknownOutcome", "ReminderRateLimited", "ExtractionFailed", "InternalError", "TooManyRequests"].map((name) => [name, { description: name, content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } } }])),
   },
