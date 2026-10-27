@@ -21,6 +21,7 @@ interface StudioWizardProps {
 }
 
 export function StudioWizard({ knownClients }: StudioWizardProps) {
+  const [clients, setClients] = useState(knownClients);
   const [currentStep, setCurrentStep] = useState<StudioStep>("DESCRIBE");
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionError, setExtractionError] = useState<string | null>(null);
@@ -317,7 +318,8 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
       {currentStep === "REVIEW" && (
         <ReviewStep
           initialData={draftFormData}
-          knownClients={knownClients}
+          knownClients={clients}
+          onClientCreated={(newClient) => setClients((prev) => [...prev, newClient])}
           missingFields={missingFields}
           extractionSource={extractionSource}
           modelName={modelName}

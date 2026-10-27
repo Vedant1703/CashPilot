@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { PersistedStudioInvoice } from "./types";
+import { ClientFormModal, type ClientItem } from "@/components/clients/client-form-modal";
 
 export interface EditableLineItem {
   id: string;
@@ -41,6 +42,7 @@ interface ReviewStepProps {
   modelName?: string;
   onBack: () => void;
   onDraftSaved: (persistedInvoice: PersistedStudioInvoice, materialPayloadHash: string) => void;
+  onClientCreated?: (newClient: { id: string; name: string; email: string; company?: string | null }) => void;
 }
 
 export function ReviewStep({
@@ -51,7 +53,26 @@ export function ReviewStep({
   modelName,
   onBack,
   onDraftSaved,
+  onClientCreated,
 }: ReviewStepProps) {
+  // Quick-add client state
+  const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+  const [createdClients, setCreatedClients] = useState<
+    Array<{ id: string; name: string; email: string; company?: string | null }>
+  >([]);
+
+  // De-duplicated combined client options
+  const allClients = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; email: string; company?: string | null }>();
+    for (const c of knownClients) {
+      map.set(c.id, c);
+    }
+    for (const c of createdClients) {
+      map.set(c.id, c);
+    }
+    return Array.from(map.values());
+  }, [knownClients, createdClients]);
+
   // Form State with pure lazy initializers
   const [clientId, setClientId] = useState<string>(
     () => (initialData.clientId !== undefined ? initialData.clientId : "")
@@ -98,10 +119,19 @@ export function ReviewStep({
   // Update client selection
   const handleClientChange = (newClientId: string) => {
     setClientId(newClientId);
-    const client = knownClients.find((c) => c.id === newClientId);
+    const client = allClients.find((c) => c.id === newClientId);
     if (client) {
       setRecipientEmail(client.email);
     }
+  };
+
+  // Quick-add client callback
+  const handleQuickAddSuccess = (newClient: ClientItem) => {
+    setCreatedClients((prev) => [...prev, newClient]);
+    onClientCreated?.(newClient);
+    setClientId(newClient.id);
+    setRecipientEmail(newClient.email);
+    setIsQuickAddOpen(false);
   };
 
   // Add line item
@@ -232,7 +262,15 @@ export function ReviewStep({
     }
   };
 
-  const selectedClient = knownClients.find((c) => c.id === clientId);
+  const selectedClient = allClients.find((c) => c.id === clientId);
+
+  const activeMissingFields = useMemo(() => {
+    return missingFields.filter((f) => {
+      if (f === "client" && clientId) return false;
+      if (f === "recipientEmail" && recipientEmail && recipientEmail.includes("@")) return false;
+      return true;
+    });
+  }, [missingFields, clientId, recipientEmail]);
 
   return (
     <div className="space-y-6 animate-in fade-in duration-200">
@@ -258,13 +296,13 @@ export function ReviewStep({
       </div>
 
       {/* Attention Banner if missing fields exist */}
-      {missingFields.length > 0 && (
+      {activeMissingFields.length > 0 && (
         <div className="p-4 rounded-xl bg-[#FEF9E7] border border-[#F3E0A2] text-[#7A5600] text-xs flex items-start gap-3">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <div className="space-y-0.5">
             <span className="font-semibold text-[#12263F]">Attention needed on draft:</span>
             <p className="leading-relaxed">
-              We flagged missing items ({missingFields.join(", ")}). Please review or complete them before saving. CashPilot never guesses financial facts.
+              We flagged missing items ({activeMissingFields.join(", ")}). Please review or complete them before saving. CashPilot never guesses financial facts.
             </p>
           </div>
         </div>
@@ -300,7 +338,7 @@ export function ReviewStep({
               <label htmlFor="client-select" className="text-xs font-semibold text-[#12263F]">
                 Client & Recipient
               </label>
-              {missingFields.includes("client") && (
+              {activeMissingFields.includes("client") && (
                 <span className="text-[10px] font-semibold text-[#B4440B] px-1.5 py-0.2 rounded bg-[#FDF2EB] border border-[#F7C4A5]">
                   Needs your input
                 </span>
@@ -309,9 +347,19 @@ export function ReviewStep({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label htmlFor="client-select" className="block text-[11px] text-[#5E718D] mb-1">
-                  Select Workspace Client
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label htmlFor="client-select" className="block text-[11px] text-[#5E718D]">
+                    Select Workspace Client
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsQuickAddOpen(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0C7C61] hover:text-[#09634E] hover:underline transition-colors touch-target"
+                  >
+                    <Plus className="w-3.5 h-3.5 stroke-[2.5]" aria-hidden="true" />
+                    <span>+ Create new client</span>
+                  </button>
+                </div>
                 <select
                   id="client-select"
                   value={clientId}
@@ -319,11 +367,13 @@ export function ReviewStep({
                   className="w-full p-2.5 rounded-xl border border-[#E3E8EF] text-xs bg-[#F6F5F1]/30 focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61]"
                 >
                   <option value="" disabled={Boolean(clientId)}>
-                    -- Select a workspace client --
+                    {allClients.length === 0
+                      ? "-- No clients in workspace --"
+                      : "-- Select a workspace client --"}
                   </option>
-                  {knownClients.map((c) => (
+                  {allClients.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name} {c.company ? `(${c.company})` : ""}
+                      {c.company ? `${c.name} (${c.company})` : c.name}
                     </option>
                   ))}
                 </select>
@@ -603,6 +653,13 @@ export function ReviewStep({
           </div>
         </div>
       </div>
+
+      {/* Quick-add Client Modal */}
+      <ClientFormModal
+        isOpen={isQuickAddOpen}
+        onClose={() => setIsQuickAddOpen(false)}
+        onSuccess={handleQuickAddSuccess}
+      />
     </div>
   );
 }
