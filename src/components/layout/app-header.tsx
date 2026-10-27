@@ -33,6 +33,11 @@ function HeaderNavLinks() {
       active: pathname.startsWith("/invoices"),
     },
     {
+      href: "/clients",
+      label: "Clients",
+      active: pathname.startsWith("/clients"),
+    },
+    {
       href: "/navi-ai",
       label: "Ask Navi",
       active: pathname.startsWith("/navi-ai"),
@@ -70,6 +75,9 @@ function HeaderNavFallback() {
       </Link>
       <Link href="/invoices" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
         Invoices
+      </Link>
+      <Link href="/clients" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
+        Clients
       </Link>
       <Link href="/navi-ai" className="px-3.5 py-2 rounded-xl text-sm font-medium text-[#5E718D]">
         Ask Navi
@@ -239,6 +247,13 @@ export function AppHeader({
             className="block px-3 py-2.5 rounded-xl text-sm font-medium text-[#12263F] hover:bg-[#F6F5F1]"
           >
             Invoices
+          </Link>
+          <Link
+            href="/clients"
+            onClick={() => setMobileMenuOpen(false)}
+            className="block px-3 py-2.5 rounded-xl text-sm font-medium text-[#12263F] hover:bg-[#F6F5F1]"
+          >
+            Clients
           </Link>
           <Link
             href="/navi-ai"
