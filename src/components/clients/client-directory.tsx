@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Search,
   Plus,
@@ -14,6 +14,8 @@ import {
   AlertCircle,
   RefreshCw,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { ClientFormModal, type ClientItem } from "./client-form-modal";
 import { ClientDeleteModal } from "./client-delete-modal";
@@ -28,6 +30,17 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearch, setActiveSearch] = useState("");
+
+  // Pagination Configuration & Slicing (12 items per page)
+  const PAGE_SIZE = 12;
+  const [currentPage, setCurrentPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(clients.length / PAGE_SIZE));
+  const safePage = Math.min(currentPage, totalPages);
+
+  const paginatedClients = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return clients.slice(start, start + PAGE_SIZE);
+  }, [clients, safePage]);
 
   // Modals state
   const [formModalOpen, setFormModalOpen] = useState(false);
@@ -122,6 +135,7 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
   // Debounced search effect
   const handleSearchChange = (val: string) => {
     setSearchQuery(val);
+    setCurrentPage(1);
 
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
@@ -137,12 +151,14 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
       }
+      setCurrentPage(1);
       fetchClients(searchQuery);
     }
   };
 
   const handleClearSearch = () => {
     setSearchQuery("");
+    setCurrentPage(1);
     fetchClients("");
   };
 
@@ -405,7 +421,7 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
               </thead>
 
               <tbody className="divide-y divide-[#EEF2F6] text-xs">
-                {clients.map((client) => {
+                {paginatedClients.map((client) => {
                   const invCount = client._count?.invoices ?? 0;
                   return (
                     <tr key={client.id} className="hover:bg-[#F6F5F1]/40 transition-colors">
@@ -494,7 +510,7 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
 
           {/* Mobile Card Grid Layout (sm and down) */}
           <div className="md:hidden space-y-3">
-            {clients.map((client) => {
+            {paginatedClients.map((client) => {
               const invCount = client._count?.invoices ?? 0;
               return (
                 <div
@@ -568,6 +584,96 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
               );
             })}
           </div>
+
+          {/* Pagination Footer */}
+          {clients.length > PAGE_SIZE && (
+            <div className="rounded-2xl bg-white border border-[#E3E8EF] px-4 py-3.5 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-xs text-xs text-[#5E718D]">
+              <div>
+                Showing{" "}
+                <span className="font-semibold text-[#12263F]">
+                  {(safePage - 1) * PAGE_SIZE + 1}
+                </span>{" "}
+                to{" "}
+                <span className="font-semibold text-[#12263F]">
+                  {Math.min(safePage * PAGE_SIZE, clients.length)}
+                </span>{" "}
+                of{" "}
+                <span className="font-semibold text-[#12263F]">
+                  {clients.length}
+                </span>{" "}
+                clients
+              </div>
+
+              <nav aria-label="Clients pagination" className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E3E8EF] bg-white text-xs font-medium text-[#475569] hover:bg-[#F1F5F9] disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0C7C61]"
+                  aria-label="Go to previous page"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span className="hidden sm:inline">Previous</span>
+                </button>
+
+                <div className="flex items-center gap-1">
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => {
+                    if (
+                      totalPages > 7 &&
+                      pageNum !== 1 &&
+                      pageNum !== totalPages &&
+                      Math.abs(pageNum - safePage) > 1
+                    ) {
+                      if (pageNum === 2 && safePage > 4) {
+                        return (
+                          <span key="ellipsis-start" className="px-1 text-[#94A3B8]">
+                            …
+                          </span>
+                        );
+                      }
+                      if (pageNum === totalPages - 1 && safePage < totalPages - 3) {
+                        return (
+                          <span key="ellipsis-end" className="px-1 text-[#94A3B8]">
+                            …
+                          </span>
+                        );
+                      }
+                      return null;
+                    }
+
+                    const isActive = pageNum === safePage;
+                    return (
+                      <button
+                        key={pageNum}
+                        type="button"
+                        onClick={() => setCurrentPage(pageNum)}
+                        aria-current={isActive ? "page" : undefined}
+                        aria-label={`Page ${pageNum}`}
+                        className={`min-w-[32px] h-8 rounded-lg text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0C7C61] ${
+                          isActive
+                            ? "bg-[#0C7C61] text-white shadow-xs"
+                            : "border border-[#E3E8EF] bg-white text-[#475569] hover:bg-[#F1F5F9]"
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E3E8EF] bg-white text-xs font-medium text-[#475569] hover:bg-[#F1F5F9] disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0C7C61]"
+                  aria-label="Go to next page"
+                >
+                  <span className="hidden sm:inline">Next</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </nav>
+            </div>
+          )}
         </>
       )}
 

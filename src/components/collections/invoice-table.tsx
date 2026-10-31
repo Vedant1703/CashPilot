@@ -12,7 +12,7 @@ import {
   type InvoiceRecord,
 } from "@/lib/dashboard/metrics";
 import { CashPilotStatus } from "@prisma/client";
-import { Search, ArrowRight, ArrowUpDown } from "lucide-react";
+import { Search, ArrowRight, ArrowUpDown, ChevronLeft, ChevronRight } from "lucide-react";
 
 export function parseStatusParam(param: string | null | undefined): string {
   if (!param) return "ALL";
@@ -261,6 +261,33 @@ export function InvoiceTable({
     }
   };
 
+  // Pagination Configuration & Slicing (15 items per page)
+  const PAGE_SIZE = 15;
+  const rawPageParam = searchParams?.get("page");
+  const urlPage = rawPageParam ? parseInt(rawPageParam, 10) : 1;
+  const validUrlPage = !isNaN(urlPage) && urlPage > 0 ? urlPage : 1;
+
+  const totalPages = Math.max(1, Math.ceil(filteredInvoices.length / PAGE_SIZE));
+  const currentPage = Math.min(validUrlPage, totalPages);
+
+  const paginatedInvoices = useMemo(() => {
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return filteredInvoices.slice(start, start + PAGE_SIZE);
+  }, [filteredInvoices, currentPage]);
+
+  const handlePageChange = (newPage: number) => {
+    const targetPage = Math.max(1, Math.min(newPage, totalPages));
+    const nextParams = new URLSearchParams();
+    const statusParam = filterToStatusParam(filter);
+    if (statusParam) nextParams.set("status", statusParam);
+    if (searchQuery.trim()) nextParams.set("q", searchQuery.trim());
+    if (targetPage > 1) nextParams.set("page", String(targetPage));
+
+    const queryStr = nextParams.toString();
+    const nextUrl = queryStr ? `${pathname}?${queryStr}` : pathname;
+    router.push(nextUrl, { scroll: false });
+  };
+
   return (
     <div className="rounded-2xl bg-white border border-[#E3E8EF] shadow-xs overflow-hidden">
       {/* Top Filter and Search Bar */}
@@ -397,7 +424,7 @@ export function InvoiceTable({
                 </td>
               </tr>
             ) : (
-              filteredInvoices.map((inv) => {
+              paginatedInvoices.map((inv) => {
                 const provenance = getInvoiceProvenance(inv);
                 const daysDiff = diffInDays(parseDate(inv.dueDate), now);
 
@@ -509,6 +536,98 @@ export function InvoiceTable({
           </tbody>
         </table>
       </div>
+
+      {/* Pagination Footer */}
+      {filteredInvoices.length > 0 && (
+        <div className="border-t border-[#E3E8EF] px-4 py-3.5 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 bg-[#F8FAFC]/50 text-xs text-[#64748B]">
+          <div>
+            Showing{" "}
+            <span className="font-semibold text-[#1B2559]">
+              {(currentPage - 1) * PAGE_SIZE + 1}
+            </span>{" "}
+            to{" "}
+            <span className="font-semibold text-[#1B2559]">
+              {Math.min(currentPage * PAGE_SIZE, filteredInvoices.length)}
+            </span>{" "}
+            of{" "}
+            <span className="font-semibold text-[#1B2559]">
+              {filteredInvoices.length}
+            </span>{" "}
+            {filteredInvoices.length === 1 ? "invoice" : "invoices"}
+          </div>
+
+          {totalPages > 1 && (
+            <nav aria-label="Invoice table pagination" className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage - 1)}
+                disabled={currentPage <= 1}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E3E8EF] bg-white text-xs font-medium text-[#475569] hover:bg-[#F1F5F9] disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0C7C61]"
+                aria-label="Go to previous page"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Previous</span>
+              </button>
+
+              <div className="flex items-center gap-1">
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => {
+                  if (
+                    totalPages > 7 &&
+                    pageNum !== 1 &&
+                    pageNum !== totalPages &&
+                    Math.abs(pageNum - currentPage) > 1
+                  ) {
+                    if (pageNum === 2 && currentPage > 4) {
+                      return (
+                        <span key="ellipsis-start" className="px-1 text-[#94A3B8]">
+                          …
+                        </span>
+                      );
+                    }
+                    if (pageNum === totalPages - 1 && currentPage < totalPages - 3) {
+                      return (
+                        <span key="ellipsis-end" className="px-1 text-[#94A3B8]">
+                          …
+                        </span>
+                      );
+                    }
+                    return null;
+                  }
+
+                  const isActive = pageNum === currentPage;
+                  return (
+                    <button
+                      key={pageNum}
+                      type="button"
+                      onClick={() => handlePageChange(pageNum)}
+                      aria-current={isActive ? "page" : undefined}
+                      aria-label={`Page ${pageNum}`}
+                      className={`min-w-[32px] h-8 rounded-lg text-xs font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0C7C61] ${
+                        isActive
+                          ? "bg-[#0C7C61] text-white shadow-xs"
+                          : "border border-[#E3E8EF] bg-white text-[#475569] hover:bg-[#F1F5F9]"
+                      }`}
+                    >
+                      {pageNum}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handlePageChange(currentPage + 1)}
+                disabled={currentPage >= totalPages}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E3E8EF] bg-white text-xs font-medium text-[#475569] hover:bg-[#F1F5F9] disabled:opacity-40 disabled:cursor-not-allowed transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0C7C61]"
+                aria-label="Go to next page"
+              >
+                <span className="hidden sm:inline">Next</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </nav>
+          )}
+        </div>
+      )}
     </div>
   );
 }

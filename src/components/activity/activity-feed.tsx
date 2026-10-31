@@ -25,6 +25,8 @@ import { SecurityExplainerCard } from "./security-explainer-card";
 
 interface ActivityFeedProps {
   initialItems: ActivityItem[];
+  initialTotalCount?: number;
+  initialHasMore?: boolean;
   initialTrace: InvoiceJourneyTrace | null;
   selectorOptions: InvoiceSelectorOption[];
   workspaceId: string;
@@ -33,12 +35,17 @@ interface ActivityFeedProps {
 
 export function ActivityFeed({
   initialItems,
+  initialTotalCount,
+  initialHasMore,
   initialTrace,
   selectorOptions,
   workspaceId,
   initialInvoiceId,
 }: ActivityFeedProps) {
   const [items, setItems] = useState<ActivityItem[]>(initialItems);
+  const [hasMore, setHasMore] = useState<boolean>(initialHasMore ?? false);
+  const [totalCount, setTotalCount] = useState<number>(initialTotalCount ?? initialItems.length);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [trace, setTrace] = useState<InvoiceJourneyTrace | null>(initialTrace);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     initialInvoiceId || initialTrace?.invoiceId || selectorOptions[0]?.id || null
@@ -66,11 +73,40 @@ export function ActivityFeed({
       const json = await res.json();
       if (json.success && json.data) {
         setItems(json.data.items);
+        setHasMore(Boolean(json.data.hasMore));
+        setTotalCount(json.data.totalCount ?? json.data.items.length);
       }
     } catch (err) {
       console.error("Failed to fetch activity feed:", err);
     } finally {
       setIsLoadingFeed(false);
+    }
+  };
+
+  // Load earlier events (incremental pagination)
+  const handleLoadMoreEarlier = async () => {
+    if (isLoadingMore || !hasMore) return;
+    setIsLoadingMore(true);
+    try {
+      const params = new URLSearchParams();
+      if (workspaceId) params.set("workspaceId", workspaceId);
+      if (typeFilter !== "all") params.set("type", typeFilter);
+      if (resultFilter !== "all") params.set("result", resultFilter);
+      if (searchQuery.trim()) params.set("search", searchQuery.trim());
+      params.set("offset", String(items.length));
+      params.set("limit", "25");
+
+      const res = await fetch(`/api/activity?${params.toString()}`);
+      const json = await res.json();
+      if (json.success && json.data) {
+        setItems((prev) => [...prev, ...json.data.items]);
+        setHasMore(Boolean(json.data.hasMore));
+        setTotalCount(json.data.totalCount ?? (items.length + json.data.items.length));
+      }
+    } catch (err) {
+      console.error("Failed to load more activity events:", err);
+    } finally {
+      setIsLoadingMore(false);
     }
   };
 
@@ -386,6 +422,37 @@ export function ActivityFeed({
                   </div>
                 </div>
               ))}
+
+              {/* Incremental Pagination Controls */}
+              {hasMore ? (
+                <div className="pt-2 pb-1 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={handleLoadMoreEarlier}
+                    disabled={isLoadingMore}
+                    className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl border border-[#E3E8EF] bg-white text-xs font-semibold text-[#12263F] hover:bg-[#F8FAFC] hover:border-[#CBD5E1] transition-all shadow-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0C7C61] disabled:opacity-50 disabled:cursor-not-allowed touch-target"
+                  >
+                    {isLoadingMore ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#0C7C61]" />
+                        <span>Loading earlier events…</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Load earlier events</span>
+                        <span className="text-[#8C9BAE] font-normal">
+                          ({items.length} of {totalCount})
+                        </span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : items.length > 0 ? (
+                <div className="pt-3 pb-2 text-center text-xs text-[#8C9BAE] flex items-center justify-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-[#0C7C61]" />
+                  <span>You have reached the beginning of activity history.</span>
+                </div>
+              ) : null}
             </div>
           )}
         </section>
