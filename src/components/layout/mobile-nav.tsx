@@ -3,7 +3,7 @@
 import React, { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, Kanban, FileText, Users, Sparkles } from "lucide-react";
+import { Home, Kanban, FileText, Users, Sparkles, Clock } from "lucide-react";
 
 function MobileNavTabs() {
   const pathname = usePathname();
@@ -33,6 +33,12 @@ function MobileNavTabs() {
       label: "Ask Navi",
       icon: Sparkles,
       active: pathname.startsWith("/navi-ai"),
+    },
+    {
+      href: "/activity",
+      label: "Activity",
+      icon: Clock,
+      active: pathname.startsWith("/activity"),
     },
   ];
 

@@ -1,6 +1,6 @@
 import React from "react";
 import Link from "next/link";
-import { CheckCircle2, Clock, AlertTriangle, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Clock, AlertTriangle, ShieldCheck, ArrowRight } from "lucide-react";
 import type { ActivityFeedItem } from "@/lib/services/dashboard.service";
 
 interface RecentActivityProps {
@@ -34,9 +34,18 @@ export function RecentActivity({ activities }: RecentActivityProps) {
             Append-only record of approvals, provider calls, and status reconciliations
           </p>
         </div>
-        <span className="text-[11px] font-mono text-[#5E718D] px-2 py-0.5 rounded-full bg-[#F6F5F1] border border-[#E3E8EF]">
-          Append-Only
-        </span>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/activity"
+            className="hidden sm:inline-flex items-center gap-1 text-xs font-semibold text-[#0C7C61] hover:underline"
+          >
+            <span>View all</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+          <span className="text-[11px] font-mono text-[#5E718D] px-2 py-0.5 rounded-full bg-[#F6F5F1] border border-[#E3E8EF]">
+            Append-Only
+          </span>
+        </div>
       </div>
 
       {activities.length === 0 ? (
@@ -91,6 +100,18 @@ export function RecentActivity({ activities }: RecentActivityProps) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {activities.length > 0 && (
+        <div className="pt-3 border-t border-[#EEF2F6] text-center">
+          <Link
+            href="/activity"
+            className="text-xs font-semibold text-[#0C7C61] hover:underline inline-flex items-center gap-1"
+          >
+            <span>Inspect complete audit trail in Activity</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
         </div>
       )}
     </div>

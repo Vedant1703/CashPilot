@@ -25,6 +25,7 @@ import {
   Bell,
   Clock,
   Info,
+  ArrowRight,
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
@@ -613,6 +614,17 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
             {syncAlert.details && (
               <p className="text-[11px] opacity-80">{syncAlert.details}</p>
             )}
+            {syncAlert.type === "success" && (
+              <div className="pt-1">
+                <Link
+                  href={`/activity?invoiceId=${invoice.id}`}
+                  className="inline-flex items-center gap-1 font-semibold underline text-[11px] hover:opacity-80"
+                >
+                  <span>See in Activity</span>
+                  <ArrowRight className="w-3 h-3" />
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -897,9 +909,18 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
               <h3 className="font-semibold text-xs tracking-wider uppercase text-[#5E718D]">
                 Audit Activity History
               </h3>
-              <span className="text-[10px] text-[#5E718D]">
-                {invoice.activities?.length ?? 0} events recorded
-              </span>
+              <div className="flex items-center gap-2">
+                <Link
+                  href={`/activity?invoiceId=${invoice.id}`}
+                  className="text-xs font-semibold text-[#0C7C61] hover:underline inline-flex items-center gap-0.5"
+                >
+                  <span>See in Activity</span>
+                  <ArrowRight className="w-3 h-3" />
+                </Link>
+                <span className="text-[10px] text-[#5E718D]">
+                  ({invoice.activities?.length ?? 0})
+                </span>
+              </div>
             </div>
 
             {!invoice.activities || invoice.activities.length === 0 ? (

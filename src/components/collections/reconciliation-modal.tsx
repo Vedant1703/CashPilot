@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatMoney } from "@/lib/money";
 import { StatusBadge } from "@/components/invoices/status-badge";
@@ -441,8 +442,22 @@ export function ReconciliationModal({
 
         {/* Footer Actions */}
         <div className="p-4 sm:p-5 border-t border-[#E3E8EF] bg-[#F6F5F1] flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs text-[#5E718D]">
-            {displaySummary ? `Reconciled at ${new Date(displaySummary.syncedAt).toLocaleTimeString()}` : "Ready to synchronize"}
+          <div className="text-xs text-[#5E718D] flex flex-wrap items-center gap-1.5">
+            <span>
+              {displaySummary ? `Reconciled at ${new Date(displaySummary.syncedAt).toLocaleTimeString()}` : "Ready to synchronize"}
+            </span>
+            {displaySummary && (
+              <>
+                <span>·</span>
+                <Link
+                  href="/activity"
+                  onClick={onClose}
+                  className="text-[#0C7C61] font-semibold hover:underline"
+                >
+                  See in Activity
+                </Link>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
