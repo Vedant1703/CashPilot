@@ -10,6 +10,7 @@ const requiredPaths = [
   "/api/invoices/{id}/remind",
   "/api/invoices/{id}/cancel",
   "/api/invoices/{id}/sync",
+  "/api/invoices/sync",
   "/api/navi-ai/chat",
   "/api/auth/signup",
   "/api/auth/login",

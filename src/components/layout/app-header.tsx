@@ -4,6 +4,7 @@ import React, { Suspense, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { CashPilotLogo } from "@/components/brand/cashpilot-logo";
+import { ReconciliationModal } from "@/components/collections/reconciliation-modal";
 import { RefreshCw, Plus, Menu, X, ShieldAlert, LogOut } from "lucide-react";
 
 interface AppHeaderProps {
@@ -94,13 +95,13 @@ export function AppHeader({
   user,
 }: AppHeaderProps) {
   const router = useRouter();
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [showReconciliationModal, setShowReconciliationModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    window.location.reload();
+  const handleRefresh = () => {
+    setShowReconciliationModal(true);
+    setMobileMenuOpen(false);
   };
 
   const handleLogout = async () => {
@@ -170,11 +171,10 @@ export function AppHeader({
           <button
             type="button"
             onClick={handleRefresh}
-            disabled={isRefreshing}
-            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#E3E8EF] text-[#12263F] hover:bg-[#F6F5F1] text-xs font-medium transition-colors touch-target disabled:opacity-60"
-            aria-label="Refresh status from database"
+            className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-[#E3E8EF] text-[#12263F] hover:bg-[#F6F5F1] text-xs font-medium transition-colors touch-target"
+            aria-label="Refresh and reconcile board with PayPal"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin text-[#0C7C61]" : "text-[#5E718D]"}`} />
+            <RefreshCw className="w-3.5 h-3.5 text-[#5E718D]" />
             <span>Refresh</span>
           </button>
 
@@ -295,6 +295,12 @@ export function AppHeader({
           </div>
         </div>
       )}
+
+      {/* Workspace Status Reconciliation Modal (UI Reference Page 14) */}
+      <ReconciliationModal
+        isOpen={showReconciliationModal}
+        onClose={() => setShowReconciliationModal(false)}
+      />
     </header>
   );
 }

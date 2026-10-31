@@ -47,6 +47,11 @@ import {
   Prisma,
 } from "@prisma/client";
 import { createHash } from "crypto";
+import {
+  calculateDashboardMetrics,
+  groupInvoicesForCollections,
+  type InvoiceRecord,
+} from "@/lib/dashboard/metrics";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Result types
@@ -2970,3 +2975,346 @@ async function updateOperationAndAudit(
     });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace Batch Reconciliation (SRS §4, §5 & UI Design Reference Page 14)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ReconciliationItemResult {
+  invoiceId: string;
+  number: string | null;
+  clientName: string;
+  totalMinorUnits: number;
+  currency: string;
+  paypalInvoiceId: string | null;
+  hasPaypalInvoice: boolean;
+  previousPaypalStatus: string | null;
+  currentPaypalStatus: string | null;
+  previousCashpilotStatus: CashPilotStatus;
+  currentCashpilotStatus: CashPilotStatus;
+  statusChanged: boolean;
+  isStale: boolean;
+  reconciledOperationsCount: number;
+  message: string;
+}
+
+export interface BatchSyncStageSummary {
+  draft: number;
+  awaitingPayment: number;
+  dueSoon: number;
+  overdue: number;
+  paid: number;
+  needsReview: number;
+  cancelled: number;
+}
+
+export interface BatchSyncSummary {
+  workspaceId: string;
+  syncedAt: string;
+  totalInvoicesScanned: number;
+  totalPaypalInvoicesQueried: number;
+  changedCount: number;
+  staleCount: number;
+  reconciledCount: number;
+  beforeStages: BatchSyncStageSummary;
+  afterStages: BatchSyncStageSummary;
+  beforeOutstandingMinorUnits: number;
+  afterOutstandingMinorUnits: number;
+  currency: string;
+  items: ReconciliationItemResult[];
+}
+
+function toInvoiceRecord(inv: {
+  id: string;
+  number: string | null;
+  title: string | null;
+  client: { id?: string; name: string; email: string; company?: string | null };
+  currency: string;
+  totalMinorUnits: number;
+  subtotalMinorUnits?: number | null;
+  taxMinorUnits?: number | null;
+  invoiceDate: Date;
+  dueDate: Date;
+  cashpilotStatus: CashPilotStatus;
+  paypalStatus: string | null;
+  paypalInvoiceId: string | null;
+  isDemoData: boolean;
+  syncIsStale: boolean;
+  aiDraftId: string | null;
+  createdAt?: Date;
+  updatedAt?: Date;
+  lastSyncAt?: Date | null;
+  notes?: string | null;
+  lineItems?: Array<{
+    id?: string;
+    description: string;
+    quantity: number;
+    unitPriceMinorUnits: number;
+    totalMinorUnits: number;
+  }>;
+}): InvoiceRecord {
+  return {
+    id: inv.id,
+    number: inv.number,
+    title: inv.title,
+    client: inv.client,
+    currency: inv.currency,
+    totalMinorUnits: inv.totalMinorUnits,
+    subtotalMinorUnits: inv.subtotalMinorUnits ?? undefined,
+    taxMinorUnits: inv.taxMinorUnits ?? undefined,
+    invoiceDate: inv.invoiceDate,
+    dueDate: inv.dueDate,
+    cashpilotStatus: inv.cashpilotStatus,
+    paypalStatus: inv.paypalStatus,
+    paypalInvoiceId: inv.paypalInvoiceId,
+    isDemoData: inv.isDemoData,
+    syncIsStale: inv.syncIsStale,
+    aiDraftId: inv.aiDraftId,
+    createdAt: inv.createdAt,
+    updatedAt: inv.updatedAt,
+    lastSyncAt: inv.lastSyncAt,
+    notes: inv.notes,
+    lineItems: inv.lineItems,
+  };
+}
+
+function extractStageSummary(records: InvoiceRecord[], now: Date): { stages: BatchSyncStageSummary; outstandingMinorUnits: number } {
+  const collections = groupInvoicesForCollections(records, now);
+  const metrics = calculateDashboardMetrics(records, now);
+  return {
+    stages: {
+      draft: collections.columns.draft.length,
+      awaitingPayment: collections.columns.awaitingPayment.length,
+      dueSoon: collections.columns.dueSoon.length,
+      overdue: collections.columns.overdue.length,
+      paid: collections.columns.paid.length,
+      needsReview: collections.tray.needsReview.length,
+      cancelled: collections.tray.cancelled.length,
+    },
+    outstandingMinorUnits: metrics.outstanding.amountMinorUnits,
+  };
+}
+
+/**
+ * Reconciles all active invoices for a workspace with PayPal Sandbox.
+ *
+ * Invariants (SRS §4, §5 & UI Design Reference Page 14):
+ *   1. Ask PayPal: Queries status for every invoice linked to PayPal.
+ *   2. Check the answer: Evaluates returned status against known invoice rules.
+ *   3. Match to a stage: Maps provider status + due date to CashPilot lifecycle stages.
+ *   4. Save and log: Persists state atomically and records append-only audit trail.
+ *   5. Update the board: Produces before-and-after column summaries and delta metrics.
+ *   - Stale preservation: If PayPal is unreachable for an invoice, preserves last known state.
+ *   - Financial integrity: Only verified provider proof can set PAID; never assumes Paid on error.
+ */
+export async function batchSyncWorkspaceInvoicesWithPayPal(
+  workspaceId: string,
+  actorId: string
+): Promise<ServiceResult<BatchSyncSummary>> {
+  // 1. Verify workspace exists
+  const workspace = await db.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { id: true, ownerId: true },
+  });
+
+  if (!workspace) {
+    return { ok: false, error: "Workspace not found", code: "NOT_FOUND" };
+  }
+
+  // 2. Fetch all current invoices for the workspace
+  const initialRawInvoices = await db.invoice.findMany({
+    where: { workspaceId },
+    include: {
+      client: {
+        select: { id: true, name: true, email: true, company: true },
+      },
+      lineItems: {
+        select: {
+          id: true,
+          description: true,
+          quantity: true,
+          unitPriceMinorUnits: true,
+          totalMinorUnits: true,
+        },
+        orderBy: { sortOrder: "asc" },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const now = new Date();
+  const defaultCurrency = initialRawInvoices[0]?.currency ?? "USD";
+
+  // 3. Compute baseline before-metrics
+  const initialRecords = initialRawInvoices.map(toInvoiceRecord);
+  const beforeSummary = extractStageSummary(initialRecords, now);
+
+  if (initialRawInvoices.length === 0) {
+    return {
+      ok: true,
+      data: {
+        workspaceId,
+        syncedAt: now.toISOString(),
+        totalInvoicesScanned: 0,
+        totalPaypalInvoicesQueried: 0,
+        changedCount: 0,
+        staleCount: 0,
+        reconciledCount: 0,
+        beforeStages: beforeSummary.stages,
+        afterStages: beforeSummary.stages,
+        beforeOutstandingMinorUnits: 0,
+        afterOutstandingMinorUnits: 0,
+        currency: defaultCurrency,
+        items: [],
+      },
+    };
+  }
+
+  // 4. Reconcile each invoice
+  const items: ReconciliationItemResult[] = [];
+  let changedCount = 0;
+  let staleCount = 0;
+  let reconciledCount = 0;
+  let paypalInvoicesQueried = 0;
+
+  for (const inv of initialRawInvoices) {
+    if (!inv.paypalInvoiceId) {
+      items.push({
+        invoiceId: inv.id,
+        number: inv.number,
+        clientName: inv.client.name,
+        totalMinorUnits: inv.totalMinorUnits,
+        currency: inv.currency,
+        paypalInvoiceId: null,
+        hasPaypalInvoice: false,
+        previousPaypalStatus: null,
+        currentPaypalStatus: null,
+        previousCashpilotStatus: inv.cashpilotStatus,
+        currentCashpilotStatus: inv.cashpilotStatus,
+        statusChanged: false,
+        isStale: false,
+        reconciledOperationsCount: 0,
+        message: "Local draft — not dispatched to PayPal",
+      });
+      continue;
+    }
+
+    paypalInvoicesQueried++;
+    const syncResult = await syncInvoiceWithPayPal(workspaceId, actorId, inv.id);
+
+    if (!syncResult.ok) {
+      staleCount++;
+      items.push({
+        invoiceId: inv.id,
+        number: inv.number,
+        clientName: inv.client.name,
+        totalMinorUnits: inv.totalMinorUnits,
+        currency: inv.currency,
+        paypalInvoiceId: inv.paypalInvoiceId,
+        hasPaypalInvoice: true,
+        previousPaypalStatus: inv.paypalStatus,
+        currentPaypalStatus: inv.paypalStatus,
+        previousCashpilotStatus: inv.cashpilotStatus,
+        currentCashpilotStatus: inv.cashpilotStatus,
+        statusChanged: false,
+        isStale: true,
+        reconciledOperationsCount: 0,
+        message: `PayPal sync failed: ${syncResult.error}. Preserved last known status.`,
+      });
+    } else {
+      const res = syncResult.data;
+      if (res.statusChanged) changedCount++;
+      if (res.isStale) staleCount++;
+      if (res.reconciledOperationsCount > 0) reconciledCount += res.reconciledOperationsCount;
+
+      let msg = "Status verified with PayPal Sandbox — no changes";
+      if (res.statusChanged) {
+        msg = `Status updated: ${res.previousCashpilotStatus} → ${res.currentCashpilotStatus} (PayPal: ${res.currentPaypalStatus})`;
+      } else if (res.reconciledOperationsCount > 0) {
+        msg = `Reconciled ${res.reconciledOperationsCount} uncertain operation(s)`;
+      }
+
+      items.push({
+        invoiceId: inv.id,
+        number: inv.number,
+        clientName: inv.client.name,
+        totalMinorUnits: inv.totalMinorUnits,
+        currency: inv.currency,
+        paypalInvoiceId: inv.paypalInvoiceId,
+        hasPaypalInvoice: true,
+        previousPaypalStatus: res.previousPaypalStatus,
+        currentPaypalStatus: res.currentPaypalStatus,
+        previousCashpilotStatus: res.previousCashpilotStatus,
+        currentCashpilotStatus: res.currentCashpilotStatus,
+        statusChanged: res.statusChanged,
+        isStale: res.isStale,
+        reconciledOperationsCount: res.reconciledOperationsCount,
+        message: msg,
+      });
+    }
+  }
+
+  // 5. Query updated state and compute after-summary
+  const updatedRawInvoices = await db.invoice.findMany({
+    where: { workspaceId },
+    include: {
+      client: {
+        select: { id: true, name: true, email: true, company: true },
+      },
+      lineItems: {
+        select: {
+          id: true,
+          description: true,
+          quantity: true,
+          unitPriceMinorUnits: true,
+          totalMinorUnits: true,
+        },
+        orderBy: { sortOrder: "asc" },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  const updatedRecords = updatedRawInvoices.map(toInvoiceRecord);
+  const afterSummary = extractStageSummary(updatedRecords, now);
+
+  // 6. Record batch audit event
+  await db.activityEvent.create({
+    data: {
+      workspaceId,
+      eventType: ActivityEventType.STATUS_SYNC_SUCCESS,
+      actorType: ActorType.USER,
+      actorId,
+      description: `Batch PayPal status reconciliation completed: ${paypalInvoicesQueried} invoice(s) checked, ${changedCount} updated, ${staleCount} stale.`,
+      metadata: {
+        totalInvoicesScanned: initialRawInvoices.length,
+        totalPaypalInvoicesQueried: paypalInvoicesQueried,
+        changedCount,
+        staleCount,
+        reconciledCount,
+        beforeOutstandingMinorUnits: beforeSummary.outstandingMinorUnits,
+        afterOutstandingMinorUnits: afterSummary.outstandingMinorUnits,
+      },
+    },
+  });
+
+  return {
+    ok: true,
+    data: {
+      workspaceId,
+      syncedAt: now.toISOString(),
+      totalInvoicesScanned: initialRawInvoices.length,
+      totalPaypalInvoicesQueried: paypalInvoicesQueried,
+      changedCount,
+      staleCount,
+      reconciledCount,
+      beforeStages: beforeSummary.stages,
+      afterStages: afterSummary.stages,
+      beforeOutstandingMinorUnits: beforeSummary.outstandingMinorUnits,
+      afterOutstandingMinorUnits: afterSummary.outstandingMinorUnits,
+      currency: defaultCurrency,
+      items,
+    },
+  };
+}
+

@@ -11,9 +11,11 @@ import {
   type InvoiceRecord,
   type GroupedCollections,
 } from "@/lib/dashboard/metrics";
+import { ReconciliationModal } from "@/components/collections/reconciliation-modal";
 import {
   AlertCircle,
   ArrowRight,
+  RefreshCw,
 } from "lucide-react";
 
 interface KanbanBoardProps {
@@ -24,6 +26,7 @@ interface KanbanBoardProps {
 export function KanbanBoard({ collections, nowUtc }: KanbanBoardProps) {
   const now = nowUtc ? new Date(nowUtc) : new Date();
   const [showDragNotice, setShowDragNotice] = useState(false);
+  const [showReconciliation, setShowReconciliation] = useState(false);
 
   const columnConfig = [
     {
@@ -79,8 +82,18 @@ export function KanbanBoard({ collections, nowUtc }: KanbanBoardProps) {
         >
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 shrink-0" />
-            <span className="font-semibold">
-              ▲ Can&apos;t move to Paid by dragging. PayPal reports payment, and CashPilot follows. Refresh to check.
+            <span>
+              <span className="font-semibold">▲ Can&apos;t move to Paid by dragging.</span> PayPal reports payment, and CashPilot follows.{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDragNotice(false);
+                  setShowReconciliation(true);
+                }}
+                className="underline font-bold hover:text-[#12263F] ml-0.5 cursor-pointer"
+              >
+                Refresh status to check with PayPal →
+              </button>
             </span>
           </div>
           <button
@@ -92,6 +105,27 @@ export function KanbanBoard({ collections, nowUtc }: KanbanBoardProps) {
           </button>
         </div>
       )}
+
+      {/* Board Controls Toolbar */}
+      <div className="flex items-center justify-between gap-3 bg-white border border-[#E3E8EF] p-3 rounded-2xl shadow-xs">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full bg-[#E8F5F1] text-[#0C7C61] border border-[#A3D9CC]">
+            ● PayPal Sandbox Grounded
+          </span>
+          <span className="text-xs text-[#5E718D] hidden sm:inline">
+            Stages update automatically via PayPal verification.
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setShowReconciliation(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#E3E8EF] bg-[#F6F5F1] hover:bg-white text-xs font-semibold text-[#12263F] shadow-2xs transition-all touch-target cursor-pointer"
+        >
+          <RefreshCw className="w-3.5 h-3.5 text-[#0C7C61]" />
+          <span>Reconcile Board with PayPal</span>
+        </button>
+      </div>
 
       {/* Main 5-Column Kanban Board */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-start">
@@ -218,6 +252,12 @@ export function KanbanBoard({ collections, nowUtc }: KanbanBoardProps) {
           </div>
         </div>
       </div>
+
+      {/* Reconciliation Modal */}
+      <ReconciliationModal
+        isOpen={showReconciliation}
+        onClose={() => setShowReconciliation(false)}
+      />
     </div>
   );
 }
