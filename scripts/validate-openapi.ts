@@ -19,6 +19,7 @@ const requiredPaths = [
   "/api/auth/demo",
   "/api/clients",
   "/api/clients/{id}",
+  "/api/activity",
   "/api/openapi.json",
 ];
 const paths = openApiDocument.paths as Record<string, unknown>;

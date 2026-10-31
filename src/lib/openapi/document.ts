@@ -129,6 +129,34 @@ export const openApiDocument = {
       "x-error-codes": { "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "404": ["NOT_FOUND"], "500": ["INTERNAL_ERROR"] },
       responses: { "200": { description: "Batch reconciliation summary with before-and-after stage counts and itemized results", content: { "application/json": { schema: { $ref: "#/components/schemas/BatchSyncSuccess" } } } }, "401": { $ref: "#/components/responses/Unauthorized" }, "403": { $ref: "#/components/responses/Forbidden" }, "404": { $ref: "#/components/responses/NotFound" }, "500": { $ref: "#/components/responses/InternalError" } },
     } },
+    "/api/activity": {
+      get: {
+        tags: ["Activity & Audit"],
+        summary: "Retrieve workspace activity and audit feed",
+        operationId: "getWorkspaceActivity",
+        description: "Returns the append-only activity and audit feed for the caller's workspace. Supports filtering by event type, outcome, search, and invoice end-to-end trace.",
+        security: [{ SessionCookie: [] }, { ActorHeader: [] }],
+        parameters: [
+          { name: "workspaceId", in: "query", required: false, schema: { type: "string" }, description: "Optional workspace ID override." },
+          { name: "invoiceId", in: "query", required: false, schema: { type: "string" }, description: "Optional filter by target invoice ID." },
+          { name: "type", in: "query", required: false, schema: { type: "string", enum: ["all", "ai", "approval", "operation", "sync", "security"] }, description: "Filter by event category." },
+          { name: "result", in: "query", required: false, schema: { type: "string", enum: ["all", "confirmed", "approved", "proposed", "partial", "rejected", "unknown"] }, description: "Filter by outcome badge." },
+          { name: "search", in: "query", required: false, schema: { type: "string" }, description: "Search keyword." },
+          { name: "limit", in: "query", required: false, schema: { type: "integer", default: 50, maximum: 100 }, description: "Max events to return." },
+          { name: "offset", in: "query", required: false, schema: { type: "integer", default: 0 }, description: "Pagination offset." },
+        ],
+        "x-error-codes": { "401": ["UNAUTHORIZED"], "403": ["CROSS_WORKSPACE_FORBIDDEN"], "500": ["INTERNAL_ERROR"] },
+        responses: {
+          "200": {
+            description: "Workspace activity feed with badges and optional invoice trace",
+            content: { "application/json": { schema: { $ref: "#/components/schemas/ActivityFeedSuccess" } } },
+          },
+          "401": { $ref: "#/components/responses/Unauthorized" },
+          "403": { $ref: "#/components/responses/Forbidden" },
+          "500": { $ref: "#/components/responses/InternalError" },
+        },
+      },
+    },
     "/api/clients": {
       get: {
         tags: ["Clients"], summary: "List and search workspace clients", operationId: "listClients",
@@ -428,6 +456,24 @@ export const openApiDocument = {
             properties: {
               id: { type: "string" },
               deleted: { type: "boolean", const: true },
+            },
+          },
+        },
+      },
+      ActivityFeedSuccess: {
+        type: "object",
+        required: ["success", "data"],
+        properties: {
+          success: { type: "boolean", const: true },
+          data: {
+            type: "object",
+            required: ["items", "totalCount", "hasMore", "selectorOptions"],
+            properties: {
+              items: { type: "array", items: { type: "object" } },
+              totalCount: { type: "integer" },
+              hasMore: { type: "boolean" },
+              invoiceTrace: { type: ["object", "null"] },
+              selectorOptions: { type: "array", items: { type: "object" } },
             },
           },
         },
