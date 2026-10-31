@@ -174,6 +174,24 @@ export const aiInvoiceDraftSchema = z.object({
     .describe("Fields AI needs clarification on"),
 
   clarificationRequired: z.boolean().default(false),
+
+  isInvoiceIntent: z
+    .boolean()
+    .default(true)
+    .describe("Whether the user prompt was classified as an invoice or billing request"),
+
+  rejectionReason: z
+    .string()
+    .max(500)
+    .optional()
+    .describe("Reason why the prompt was rejected if isInvoiceIntent is false"),
+
+  confidenceScore: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe("Model confidence score for billing extraction"),
 });
 
 export type AiInvoiceDraft = z.infer<typeof aiInvoiceDraftSchema>;

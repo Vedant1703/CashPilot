@@ -17,6 +17,7 @@ import { NextRequest } from "next/server";
 import {
   extractInvoiceDeterministically,
   extractInvoiceFromPrompt,
+  hasBillingIntent,
 } from "@/lib/services/ai-extraction.service";
 import { aiInvoiceDraftSchema } from "@/lib/validations/invoice";
 import { POST as extractRoute } from "@/app/api/invoices/extract/route";
@@ -351,4 +352,72 @@ describe("AI Invoice Extraction & Governance", () => {
       expect(res.missingFields).toContain("dueDate");
     });
   });
+
+  describe("Intent Classification & Random Command Guardrails", () => {
+    it("rejects non-billing commands and trivia in hasBillingIntent heuristic", () => {
+      const trivia = hasBillingIntent("What is the capital of France?");
+      expect(trivia.hasIntent).toBe(false);
+      expect(trivia.reason).toContain("general question or command");
+
+      const weather = hasBillingIntent("How is the weather today in New York?");
+      expect(weather.hasIntent).toBe(false);
+
+      const coding = hasBillingIntent("Write a python script to reverse a string");
+      expect(coding.hasIntent).toBe(false);
+
+      const joke = hasBillingIntent("Tell me a funny joke");
+      expect(joke.hasIntent).toBe(false);
+
+      const food = hasBillingIntent("Order 2 cheese pizzas for pickup");
+      expect(food.hasIntent).toBe(false);
+
+      const gibberish = hasBillingIntent("asdfghjklqwerty123");
+      expect(gibberish.hasIntent).toBe(false);
+    });
+
+    it("accepts legitimate billing phrases with clients, hours, rates, or dollar amounts", () => {
+      expect(hasBillingIntent("Bill Acme Corp $1,500 for web design").hasIntent).toBe(true);
+      expect(hasBillingIntent("Invoice 10 hours at $150 per hour").hasIntent).toBe(true);
+      expect(hasBillingIntent("Charge $500 retainer").hasIntent).toBe(true);
+      expect(hasBillingIntent("Bill TechStart for frontend overhaul", [{ name: "TechStart" }]).hasIntent).toBe(true);
+    });
+
+    it("rejects random command in extractInvoiceFromPrompt without creating a database record", async () => {
+      const dbCountBefore = await db.aiDraft.count({ where: { workspaceId: testWorkspaceId } });
+
+      const randomPrompt = "What is the capital of France and what is the weather?";
+      const result = await extractInvoiceFromPrompt(testWorkspaceId, randomPrompt, "demo-user-1");
+
+      expect(result.isInvoiceIntent).toBe(false);
+      expect(result.aiDraftId).toBeUndefined();
+      expect(result.rejectionReason).toBeDefined();
+
+      const dbCountAfter = await db.aiDraft.count({ where: { workspaceId: testWorkspaceId } });
+      // Invariant: Rejected non-billing commands must NEVER pollute the audit/draft database
+      expect(dbCountAfter).toBe(dbCountBefore);
+    });
+
+    it("returns isInvoiceIntent: false in POST /api/invoices/extract for random commands", async () => {
+      const req = new NextRequest("http://localhost:3000/api/invoices/extract", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: session.cookieHeader,
+        },
+        body: JSON.stringify({
+          prompt: "Write a python script to reverse a linked list",
+        }),
+      });
+
+      const res = await extractRoute(req);
+      const json = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(json.success).toBe(true);
+      expect(json.data.isInvoiceIntent).toBe(false);
+      expect(json.data.rejectionReason).toBeDefined();
+      expect(json.data.aiDraftId).toBeUndefined();
+    });
+  });
 });
+

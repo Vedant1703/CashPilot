@@ -44,6 +44,15 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
     setIsExtracting(false);
     setExtractionError(null);
 
+    // If request lacked billing intent, stay on describe step and display guidance
+    if (extractionResponse?.isInvoiceIntent === false) {
+      setExtractionError(
+        extractionResponse.rejectionReason ||
+          "Navi couldn't find billing details in that description. Please describe who to bill, services rendered, and amounts."
+      );
+      return;
+    }
+
     const draft = extractionResponse?.extractedDraft ?? extractionResponse?.extractedFields ?? {};
     const matched = extractionResponse?.matchedClient ?? null;
     const missing = new Set<string>(extractionResponse?.missingFields ?? []);

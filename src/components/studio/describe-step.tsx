@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { NaviAvatar } from "@/components/navi/navi-avatar";
-import { Sparkles, ArrowRight, ShieldCheck, FileEdit, AlertCircle } from "lucide-react";
+import { Sparkles, ArrowRight, ShieldCheck, FileEdit } from "lucide-react";
 import { ExtractionResponseData } from "./types";
 
 interface DescribeStepProps {
@@ -19,12 +19,15 @@ export function DescribeStep({
   error,
 }: DescribeStepProps) {
   const [prompt, setPrompt] = useState("");
+  const [localGuidance, setLocalGuidance] = useState<string | null>(null);
 
   const examplePrompts = [
     "Bill Acme Corp for 10 hours of system design consulting at $150 per hour, net 14",
     "Bill Jane Smith $2,500 for Brand Strategy Consulting, due in 7 days",
     "Bill TechStart $1,250 for sprint 3 frontend development, 10% tax, due Nov 4, 2026",
   ];
+
+  const displayedError = localGuidance || error;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,12 +42,20 @@ export function DescribeStep({
 
       const json = await res.json();
       if (res.ok && json.success) {
-        onDraftGenerated(prompt.trim(), json.data);
+        if (json.data.isInvoiceIntent === false) {
+          setLocalGuidance(
+            json.data.rejectionReason ||
+              "This request does not appear to describe an invoice. Please describe who you want to bill and the service or amount."
+          );
+        } else {
+          setLocalGuidance(null);
+          onDraftGenerated(prompt.trim(), json.data);
+        }
       } else {
-        alert(json.error || "Failed to extract invoice from description.");
+        setLocalGuidance(json.error || "Failed to extract invoice from description.");
       }
     } catch {
-      alert("Network error while connecting to extraction service.");
+      setLocalGuidance("Network error while connecting to extraction service.");
     }
   };
 
@@ -63,10 +74,33 @@ export function DescribeStep({
 
       {/* Main Input Form */}
       <form onSubmit={handleSubmit} className="rounded-2xl bg-white border border-[#E3E8EF] p-5 sm:p-6 shadow-xs space-y-4">
-        {error && (
-          <div className="p-3.5 rounded-xl bg-[#FEF3F2] border border-[#FECDCA] text-[#B42318] text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{error}</span>
+        {displayedError && (
+          <div className="p-4 rounded-xl bg-[#FFF8EE] border border-[#FEE4B2] text-[#7A3E00] text-xs space-y-2 animate-in fade-in">
+            <div className="flex items-start gap-2.5">
+              <NaviAvatar state="helping" size={24} className="shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-semibold text-[#5B3000]">
+                  Navi couldn&apos;t find billing details in this request
+                </p>
+                <p className="text-[#874A00] leading-relaxed">
+                  {displayedError}
+                </p>
+                <div className="pt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <span className="font-medium text-[#7A3E00]">Helpful tip:</span>
+                  <span>Try specifying who you want to bill and the amount:</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPrompt("Bill Acme Corp $1,500 for web design due in 14 days");
+                      setLocalGuidance(null);
+                    }}
+                    className="font-medium text-[#5B3FD0] hover:underline"
+                  >
+                    &ldquo;Bill Acme Corp $1,500 for web design due in 14 days&rdquo;
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -78,7 +112,10 @@ export function DescribeStep({
             id="invoice-prompt"
             rows={4}
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => {
+              setPrompt(e.target.value);
+              if (localGuidance) setLocalGuidance(null);
+            }}
             disabled={isLoading}
             placeholder='e.g., "Bill Acme Corp for 10 hours of system design consulting at $150 per hour, net 14, with 10% tax"'
             className="w-full p-3.5 rounded-xl border border-[#E3E8EF] text-sm focus:outline-hidden focus:border-[#5B3FD0] focus:ring-2 focus:ring-[#5B3FD0]/20 bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] disabled:opacity-60 leading-relaxed"

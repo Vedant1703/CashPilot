@@ -20,7 +20,9 @@ import {
 import { Prisma, AiDraftReviewStatus } from "@prisma/client";
 
 export interface ExtractionResult {
-  aiDraftId: string;
+  aiDraftId?: string;
+  isInvoiceIntent: boolean;
+  rejectionReason?: string;
   source: "ai_model" | "deterministic_rule_based";
   modelName: string;
   extractedDraft: AiInvoiceDraft;
@@ -36,7 +38,90 @@ export interface ExtractionResult {
 }
 
 /**
- * Deterministic pattern extraction engine.
+ * Fast pre-flight heuristic to determine whether user input possesses plausible billing/invoice intent.
+ * Short-circuits casual banter, trivia, coding requests, and gibberish in <1ms without calling AI.
+ */
+export function hasBillingIntent(
+  inputText: string,
+  knownClients: Array<{ name: string; company?: string | null }> = []
+): { hasIntent: boolean; reason?: string } {
+  const trimmed = inputText.trim();
+  const lower = trimmed.toLowerCase();
+
+  // 1. Extreme brevity
+  if (trimmed.length < 5) {
+    return {
+      hasIntent: false,
+      reason: "Please provide a more descriptive invoice request (e.g., client name, services, and amount).",
+    };
+  }
+
+  // 2. Gibberish / low-entropy / punctuation spam
+  const alphaChars = trimmed.replace(/[^a-zA-Z]/g, "");
+  if (alphaChars.length < 3) {
+    return {
+      hasIntent: false,
+      reason: "Your request does not contain recognizable words or invoice details.",
+    };
+  }
+
+  // Check for unspaced long gibberish strings
+  if (!trimmed.includes(" ") && trimmed.length > 14) {
+    return {
+      hasIntent: false,
+      reason: "Your request appears to be unspaced or unrecognized text.",
+    };
+  }
+
+  // 3. Known client match in prompt
+  const hasKnownClient = knownClients.some((c) => {
+    const cName = c.name.toLowerCase();
+    const cComp = (c.company || "").toLowerCase();
+    return (
+      (cName.length >= 3 && lower.includes(cName)) ||
+      (cComp.length >= 3 && lower.includes(cComp))
+    );
+  });
+
+  // 4. Financial & invoice keywords
+  const billingKeywords =
+    /\b(bill|invoice|invoicing|charge|charged|fee|fees|retainer|deposit|consulting|hours|hrs|unit price|tax rate|net\s*\d+|due\s+date|due\s+in|due\s+on|payable|reimbursement|deliverable|deliverables|milestone|services?)\b/i;
+  const currencyOrPrice = /\$\s*\d+|\b\d+\s*(?:dollars?|usd|cents?)\b|\b\d+(?:,\d{3})*(?:\.\d{2})?\s*(?:per\s+hour|\/hr|each)\b/;
+
+  const hasBillingTerm = billingKeywords.test(lower);
+  const hasCurrencyOrPrice = currencyOrPrice.test(lower) || /\$\d+/.test(lower);
+
+  // If prompt has known client OR billing term OR price indicator, consider candidate for billing
+  const hasAnyPositiveSignal = hasKnownClient || hasBillingTerm || hasCurrencyOrPrice;
+
+  // 5. Out-of-domain patterns (casual questions, coding, trivia, recipes, weather)
+  const isQuestionOrBanter =
+    /^(?:what|who|where|when|why|how)\s+(?:is|are|was|were|do|does|did|can|could|would|the)\b/i.test(
+      lower
+    ) ||
+    /\b(weather|forecast|joke|poem|song|recipe|capital of|president of|meaning of life|translate|reverse a string|algorithm|write\s+(?:a\s+)?(?:python|javascript|code|script|essay|story)|order\s+(?:pizza|food|burger))\b/i.test(
+      lower
+    ) ||
+    /^(?:hello|hi|hey|good\s+(?:morning|afternoon|evening)|howdy)\b[!.?]*$/i.test(lower);
+
+  // If it matches an out-of-domain question/banter and lacks strong billing terms, reject
+  if (isQuestionOrBanter && !hasCurrencyOrPrice && !hasKnownClient) {
+    return {
+      hasIntent: false,
+      reason: "This request appears to be a general question or command rather than an invoice or billing description.",
+    };
+  }
+
+  if (!hasAnyPositiveSignal) {
+    return {
+      hasIntent: false,
+      reason: "No billing terms, client name, service description, or price were found in this request.",
+    };
+  }
+
+  return { hasIntent: true };
+}
+
 /**
  * Unambiguously matches a client candidate name or prompt text against known workspace clients.
  * Normalizes common corporate suffixes (Inc, LLC, Corp, etc.) for flexible matching.
@@ -157,9 +242,30 @@ export function extractInvoiceDeterministically(
   matchedClient: (typeof knownClients)[0] | null;
   missingFields: string[];
   isAmbiguousClient: boolean;
+  isInvoiceIntent: boolean;
+  rejectionReason?: string;
 } {
   const missingFields: string[] = [];
   const text = inputText.toLowerCase();
+
+  // 0. Pre-flight intent check
+  const intentCheck = hasBillingIntent(inputText, knownClients);
+  if (!intentCheck.hasIntent) {
+    return {
+      draft: {
+        isInvoiceIntent: false,
+        rejectionReason: intentCheck.reason,
+        currency: "USD",
+        clarificationRequired: true,
+        missingFields: ["client", "lineItems", "dueDate"],
+      },
+      matchedClient: null,
+      missingFields: ["client", "lineItems", "dueDate"],
+      isAmbiguousClient: false,
+      isInvoiceIntent: false,
+      rejectionReason: intentCheck.reason,
+    };
+  }
 
   // 1. Client matching against known clients
   const clientMatch = inputText.match(
@@ -279,6 +385,26 @@ export function extractInvoiceDeterministically(
     }
   }
 
+  // Check if after parsing there is any substance (line item or client candidate)
+  const hasSubstance = lineItems.length > 0 || !!matchedClient || (!!candidateRaw && candidateRaw.length > 2);
+  if (!hasSubstance) {
+    const reason = "Could not identify any invoice line items, amounts, or clients in this request.";
+    return {
+      draft: {
+        isInvoiceIntent: false,
+        rejectionReason: reason,
+        currency: "USD",
+        clarificationRequired: true,
+        missingFields: ["client", "lineItems", "dueDate"],
+      },
+      matchedClient: null,
+      missingFields: ["client", "lineItems", "dueDate"],
+      isAmbiguousClient: false,
+      isInvoiceIntent: false,
+      rejectionReason: reason,
+    };
+  }
+
   // 3. Tax Rate
   let taxRatePercent: number | undefined;
   const taxMatch =
@@ -344,6 +470,7 @@ export function extractInvoiceDeterministically(
   }
 
   const draft: AiInvoiceDraft = {
+    isInvoiceIntent: true,
     clientName,
     recipientEmail,
     title,
@@ -362,6 +489,7 @@ export function extractInvoiceDeterministically(
     matchedClient,
     missingFields,
     isAmbiguousClient,
+    isInvoiceIntent: true,
   };
 }
 
@@ -379,6 +507,29 @@ export async function extractInvoiceFromPrompt(
     select: { id: true, name: true, email: true, company: true },
   });
 
+  // 2. Pre-flight intent classification: reject non-billing queries in <1ms without AI/DB overhead
+  const preflightCheck = hasBillingIntent(inputText, knownClients);
+  if (!preflightCheck.hasIntent) {
+    return {
+      aiDraftId: undefined,
+      isInvoiceIntent: false,
+      rejectionReason: preflightCheck.reason,
+      source: "deterministic_rule_based",
+      modelName: "cashpilot-intent-gate-v1",
+      extractedDraft: {
+        isInvoiceIntent: false,
+        rejectionReason: preflightCheck.reason,
+        currency: "USD",
+        clarificationRequired: true,
+        missingFields: ["client", "lineItems", "dueDate"],
+      },
+      matchedClient: null,
+      missingFields: ["client", "lineItems", "dueDate"],
+      clarificationMessage: preflightCheck.reason,
+      explanation: preflightCheck.reason || "Input was rejected by CashPilot intent guardrail.",
+    };
+  }
+
   let env;
   try {
     env = getServerEnv();
@@ -391,14 +542,28 @@ export async function extractInvoiceFromPrompt(
   let modelName = "deterministic-rule-engine-v1";
   let explanation = "Extracted using CashPilot deterministic pattern engine (AI credentials not configured).";
 
-  // 2. Attempt real AI if configured
+  // 3. Attempt real AI if configured
   if (env && isAiConfigured(env) && env.AI_PROVIDER === "google") {
     const activeEnv = env;
     try {
+      const knownClientsSummary =
+        knownClients.length > 0
+          ? JSON.stringify(
+              knownClients.map((c) => ({
+                id: c.id,
+                name: c.name,
+                company: c.company || undefined,
+                email: c.email,
+              }))
+            )
+          : "None recorded in workspace yet";
+
       const systemInstruction = `You are CashPilot AI, a financial invoice extraction assistant.
-Extract structured invoice data from the user request into valid JSON matching this schema:
+Evaluate the user prompt and extract structured invoice data into valid JSON matching this schema:
 {
-  "clientName": string,
+  "isInvoiceIntent": boolean,
+  "rejectionReason": string (required if isInvoiceIntent is false, explaining why),
+  "clientName": string (optional),
   "recipientEmail": string (optional, only if provided),
   "title": string,
   "currency": "USD",
@@ -409,7 +574,19 @@ Extract structured invoice data from the user request into valid JSON matching t
   "notes": string,
   "missingFields": string[]
 }
-Never guess missing email addresses or dates. If missing, add field name to missingFields. Return raw JSON only.`;
+
+WORKSPACE CONTEXT:
+Known Clients: ${knownClientsSummary}
+
+CRITICAL RULES:
+1. Intent Classification:
+   - If the user's input is NOT an invoice, billing, payment request, or description of services/hours rendered (e.g. general questions, weather, jokes, programming requests, casual chat, food orders, or gibberish), you MUST set "isInvoiceIntent": false and explain in "rejectionReason".
+   - Do NOT invent fictional line items, clients, or fake services for non-billing requests.
+2. Grounded Extraction:
+   - If "isInvoiceIntent" is true, match client to Known Clients if possible.
+   - Never guess or fabricate missing email addresses or dates. Flag them in "missingFields".
+   - Authoritative totals will be calculated by the server, not you.
+3. Return raw JSON only.`;
 
       const promptPayload = {
         contents: [
@@ -455,17 +632,56 @@ Never guess missing email addresses or dates. If missing, add field name to miss
     }
   }
 
-  // 3. Fallback to deterministic extraction if AI was not used or failed
+  // 4. Handle LLM rejection if Gemini determined the request was not billing intent
+  if (rawOutput && rawOutput.isInvoiceIntent === false) {
+    const rejReason =
+      (rawOutput.rejectionReason as string) ||
+      "The request does not appear to describe an invoice or billing request.";
+    return {
+      aiDraftId: undefined,
+      isInvoiceIntent: false,
+      rejectionReason: rejReason,
+      source: "ai_model",
+      modelName,
+      extractedDraft: {
+        isInvoiceIntent: false,
+        rejectionReason: rejReason,
+        currency: "USD",
+        clarificationRequired: true,
+        missingFields: ["client", "lineItems", "dueDate"],
+      },
+      matchedClient: null,
+      missingFields: ["client", "lineItems", "dueDate"],
+      clarificationMessage: rejReason,
+      explanation: rejReason,
+    };
+  }
+
+  // 5. Fallback to deterministic extraction if AI was not used or failed
   let detResult: ReturnType<typeof extractInvoiceDeterministically> | null = null;
   if (!rawOutput) {
     detResult = extractInvoiceDeterministically(inputText, knownClients);
+    if (!detResult.isInvoiceIntent) {
+      return {
+        aiDraftId: undefined,
+        isInvoiceIntent: false,
+        rejectionReason: detResult.rejectionReason,
+        source: "deterministic_rule_based",
+        modelName: "deterministic-rule-engine-v1",
+        extractedDraft: detResult.draft,
+        matchedClient: null,
+        missingFields: detResult.missingFields,
+        clarificationMessage: detResult.rejectionReason,
+        explanation: detResult.rejectionReason || "Could not identify billing intent in request.",
+      };
+    }
     rawOutput = detResult.draft as unknown as Record<string, unknown>;
     source = "deterministic_rule_based";
     modelName = "deterministic-rule-engine-v1";
     explanation = "Extracted using CashPilot deterministic pattern engine (AI credentials not configured or offline).";
   }
 
-  // 4. Validate output with Zod on the server (Treat AI output as untrusted input)
+  // 6. Validate output with Zod on the server (Treat AI output as untrusted input)
   const parsed = aiInvoiceDraftSchema.safeParse(rawOutput);
   let extractedDraft: AiInvoiceDraft;
 
@@ -474,12 +690,44 @@ Never guess missing email addresses or dates. If missing, add field name to miss
   } else {
     // If model returned invalid structure, fall back to deterministic parsing
     detResult = extractInvoiceDeterministically(inputText, knownClients);
+    if (!detResult.isInvoiceIntent) {
+      return {
+        aiDraftId: undefined,
+        isInvoiceIntent: false,
+        rejectionReason: detResult.rejectionReason,
+        source: "deterministic_rule_based",
+        modelName: "deterministic-rule-engine-v1",
+        extractedDraft: detResult.draft,
+        matchedClient: null,
+        missingFields: detResult.missingFields,
+        clarificationMessage: detResult.rejectionReason,
+        explanation: detResult.rejectionReason || "Could not identify billing intent in request.",
+      };
+    }
     extractedDraft = detResult.draft;
     source = "deterministic_rule_based";
     explanation = "AI output failed schema validation. Replaced with verified deterministic pattern extraction.";
   }
 
-  // 5. Match with known workspace client (unambiguous only)
+  // If parsed output indicates non-invoice intent, return early
+  if (extractedDraft.isInvoiceIntent === false) {
+    const rejReason =
+      extractedDraft.rejectionReason || "Input was identified as non-invoice request.";
+    return {
+      aiDraftId: undefined,
+      isInvoiceIntent: false,
+      rejectionReason: rejReason,
+      source,
+      modelName,
+      extractedDraft,
+      matchedClient: null,
+      missingFields: extractedDraft.missingFields || ["client", "lineItems", "dueDate"],
+      clarificationMessage: rejReason,
+      explanation: rejReason,
+    };
+  }
+
+  // 7. Match with known workspace client (unambiguous only)
   let matchedClient: ExtractionResult["matchedClient"] = null;
   let isAmbiguousClient = false;
 
@@ -521,7 +769,7 @@ Never guess missing email addresses or dates. If missing, add field name to miss
   extractedDraft.missingFields = missingFields.length > 0 ? missingFields : undefined;
   extractedDraft.clarificationRequired = missingFields.length > 0;
 
-  // 6. Persist AiDraft record in database for traceability (SRS §4 & §6)
+  // 8. Persist AiDraft record in database only for legitimate invoice proposals (SRS §4 & §6)
   const aiDraftRecord = await db.aiDraft.create({
     data: {
       workspaceId,
@@ -532,13 +780,14 @@ Never guess missing email addresses or dates. If missing, add field name to miss
         actorId,
       } as Prisma.InputJsonValue,
       modelName,
-      promptVersion: "1.0",
+      promptVersion: "1.1",
       reviewStatus: AiDraftReviewStatus.PENDING,
     },
   });
 
   return {
     aiDraftId: aiDraftRecord.id,
+    isInvoiceIntent: true,
     source,
     modelName,
     extractedDraft,

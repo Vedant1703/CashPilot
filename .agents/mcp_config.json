@@ -1,3 +1,12 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "postgres": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres",
+        "postgresql://cashpilot:cashpilot_dev@localhost:5433/cashpilot_dev"
+      ]
+    }
+  }
 }

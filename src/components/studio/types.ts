@@ -44,7 +44,9 @@ export interface PayPalDraftResult {
 }
 
 export interface ExtractionResponseData {
-  aiDraftId: string;
+  aiDraftId?: string;
+  isInvoiceIntent?: boolean;
+  rejectionReason?: string;
   source: "ai_model" | "deterministic_rule_based";
   modelName: string;
   extractedDraft?: {
