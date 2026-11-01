@@ -439,6 +439,8 @@ Safety & Governance Boundaries:
       (inv) =>
         isSameDate(inv.dueDate, now) &&
         inv.cashpilotStatus !== CashPilotStatus.PAID &&
+        inv.cashpilotStatus !== CashPilotStatus.SIMULATED_PAID &&
+        inv.paymentProvenance !== "SIMULATED_DEMO_PAYMENT" &&
         inv.cashpilotStatus !== CashPilotStatus.CANCELLED
     );
     const totalDueToday = dueToday.reduce((sum, i) => sum + i.totalMinorUnits, 0);
@@ -927,9 +929,21 @@ Safety & Governance Boundaries:
     const draftInvoices = invoices.filter((i) => i.cashpilotStatus === CashPilotStatus.DRAFT);
     const draftAmount = draftInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
 
+    const simulatedInvoices = invoices.filter(
+      (i) =>
+        i.cashpilotStatus === CashPilotStatus.SIMULATED_PAID ||
+        i.paymentProvenance === "SIMULATED_DEMO_PAYMENT"
+    );
+    const simulatedAmount = simulatedInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
+
+    const simulatedBullet =
+      simulatedInvoices.length > 0
+        ? `\n• Simulated Paid (Demo — no real money moved): ${simulatedInvoices.length} (${formatMoney(simulatedAmount, "USD")})`
+        : "";
+
     const content = `All Invoices Summary (${totalCount} invoice${totalCount === 1 ? "" : "s"} · ${formatMoney(totalAmount, "USD")}):
 
-• Paid: ${paidInvoices.length} (${formatMoney(paidAmount, "USD")}) — PayPal confirmed
+• Paid: ${paidInvoices.length} (${formatMoney(paidAmount, "USD")}) — PayPal confirmed${simulatedBullet}
 • Overdue: ${overdueInvoices.length} (${formatMoney(overdueAmount, "USD")}) — requires attention
 • Due soon: ${dueSoonInvoices.length} (${formatMoney(dueSoonAmount, "USD")})
 • Awaiting payment: ${awaitingInvoices.length} (${formatMoney(awaitingAmount, "USD")})
@@ -1027,10 +1041,16 @@ All monetary values calculated on the server using integer minor units. Workflow
         day: "numeric",
         year: "numeric",
       });
+      const isSim =
+        inv.cashpilotStatus === CashPilotStatus.SIMULATED_PAID ||
+        inv.paymentProvenance === "SIMULATED_DEMO_PAYMENT";
       const paypalText = inv.paypalStatus ? `${inv.paypalStatus} (PayPal)` : "Status not confirmed by PayPal";
       const days = getDaysOverdue(inv.dueDate, now);
       const overdueExtra = inv.cashpilotStatus === CashPilotStatus.OVERDUE ? ` (${days}d overdue)` : "";
-      return `• ${inv.client.name} — ${inv.number ?? "Draft"}: ${amt} | Due: ${dueFormatted}${overdueExtra} | Status: ${inv.cashpilotStatus} | ${paypalText}`;
+      const statusText = isSim
+        ? "SIMULATED_PAID [Demo Simulation — No real money moved]"
+        : `${inv.cashpilotStatus}`;
+      return `• ${inv.client.name} — ${inv.number ?? "Draft"}: ${amt} | Due: ${dueFormatted}${overdueExtra} | Status: ${statusText} | ${paypalText}`;
     });
 
     const content = `Found ${invoices.length} total invoice${invoices.length === 1 ? "" : "s"} on file:\n\n${lines.join("\n")}\n\nWorkflow and PayPal statuses are independently maintained.`;

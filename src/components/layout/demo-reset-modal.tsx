@@ -88,7 +88,7 @@ export function DemoResetModal({ isOpen, onClose }: DemoResetModalProps) {
         setIsResetting(false);
         onClose();
         if (isViewingNonCanonicalInvoice(pathname)) {
-          router.push("/dashboard");
+          router.push("/");
         } else {
           router.refresh();
         }

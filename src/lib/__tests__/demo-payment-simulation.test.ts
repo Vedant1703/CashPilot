@@ -796,4 +796,63 @@ describe("Phase 3C: Safe Demo-Only Payment Simulation", () => {
       expect(content).toContain("SIMULATED_PAID [Demo Simulation — No real money moved]");
     }
   });
+
+  it("Ask Navi excludes simulated payments from due-today queries even if due date is today", async () => {
+    // Set due date to today
+    const today = new Date();
+    await db.invoice.update({
+      where: { id: demoInvoiceId },
+      data: { dueDate: today },
+    });
+
+    await simulateDemoPayment({ invoiceId: demoInvoiceId, actorId: DEMO_USER_ID });
+
+    const dueTodayRes = await askNavi(
+      DEMO_WORKSPACE_ID,
+      "What is due today?",
+      DEMO_USER_ID
+    );
+
+    expect(dueTodayRes.ok).toBe(true);
+    if (dueTodayRes.ok) {
+      const content = dueTodayRes.data.message.content;
+      expect(content).toContain("No open invoices are due today");
+      expect(content).not.toContain(demoInvoiceId);
+    }
+  });
+
+  it("Ask Navi summarize-all and list-all queries report simulated payments separately and explicitly labeled", async () => {
+    await simulateDemoPayment({ invoiceId: demoInvoiceId, actorId: DEMO_USER_ID });
+
+    // 1. Summarize all
+    const summarizeRes = await askNavi(
+      DEMO_WORKSPACE_ID,
+      "Summarize all invoices",
+      DEMO_USER_ID
+    );
+
+    expect(summarizeRes.ok).toBe(true);
+    if (summarizeRes.ok) {
+      const content = summarizeRes.data.message.content;
+      // Reports simulated paid separately
+      expect(content).toContain("• Simulated Paid (Demo — no real money moved): 1 ($1,500.00)");
+      // Paid remains PayPal confirmed and separate from simulated payments
+      expect(content).toContain("— PayPal confirmed");
+      expect(content).toContain("All Invoices Summary");
+    }
+
+    // 2. List all
+    const listRes = await askNavi(
+      DEMO_WORKSPACE_ID,
+      "List all invoices",
+      DEMO_USER_ID
+    );
+
+    expect(listRes.ok).toBe(true);
+    if (listRes.ok) {
+      const content = listRes.data.message.content;
+      expect(content).toContain("SIMULATED_PAID [Demo Simulation — No real money moved]");
+      expect(content).toContain("Demo Horizon Studio");
+    }
+  });
 });

@@ -91,10 +91,10 @@ describe("Phase 3B: Demo Reset UI Components", () => {
   });
 
   describe("Detail-Page Navigation Safety (Refinement 3)", () => {
-    it("correctly identifies non-canonical invoice detail routes for /dashboard redirect", async () => {
+    it("correctly identifies non-canonical invoice detail routes for / redirect", async () => {
       const { isViewingNonCanonicalInvoice } = await import("@/components/layout/demo-reset-modal");
 
-      // Non-canonical invoices that will be deleted upon reset -> must redirect to /dashboard
+      // Non-canonical invoices that will be deleted upon reset -> must redirect to /
       expect(isViewingNonCanonicalInvoice("/invoices/demo-extra-inv-123")).toBe(true);
       expect(isViewingNonCanonicalInvoice("/invoices/cm890abcdef123")).toBe(true);
       expect(isViewingNonCanonicalInvoice("/invoices/custom-invoice-999")).toBe(true);
@@ -108,6 +108,7 @@ describe("Phase 3B: Demo Reset UI Components", () => {
       // Non-detail pages -> should refresh, not redirect
       expect(isViewingNonCanonicalInvoice("/invoices")).toBe(false);
       expect(isViewingNonCanonicalInvoice("/invoices/new")).toBe(false);
+      expect(isViewingNonCanonicalInvoice("/")).toBe(false);
       expect(isViewingNonCanonicalInvoice("/dashboard")).toBe(false);
       expect(isViewingNonCanonicalInvoice("/clients")).toBe(false);
       expect(isViewingNonCanonicalInvoice("/activity")).toBe(false);
