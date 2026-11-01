@@ -2590,6 +2590,7 @@ export interface SyncInvoiceResult {
   lastSyncAt: Date | null;
   correlationId?: string;
   paypalPayerViewUrl?: string | null;
+  paypalStatusRaw?: Prisma.JsonValue | unknown;
 }
 
 /**
@@ -2882,6 +2883,7 @@ export async function syncInvoiceWithPayPal(
       lastSyncAt: now,
       correlationId: statusResult.correlationId,
       paypalPayerViewUrl: extractPayerViewUrl(statusResult.data) ?? invoice.paypalPayerViewUrl ?? null,
+      paypalStatusRaw: statusResult.data,
     },
   };
 }

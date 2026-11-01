@@ -34,6 +34,7 @@ import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
 import { CancelApprovalModal } from "./cancel-approval-modal";
 import { canSendReminder, canCancelInvoice } from "@/lib/paypal/status-mapper";
+import { PayPalPaymentSummaryCard } from "./paypal-payment-summary-card";
 
 export interface SerializedActivityEvent {
   id: string;
@@ -77,6 +78,7 @@ export interface SerializedInvoiceDetail {
   cashpilotStatus: CashPilotStatus;
   paypalInvoiceId: string | null;
   paypalStatus: string | null;
+  paypalStatusRaw?: Prisma.JsonValue | unknown;
   paypalPayerViewUrl?: string | null;
   lastSyncAt: string | null;
   syncIsStale: boolean;
@@ -395,6 +397,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         ...prev,
         cashpilotStatus: syncData.currentCashpilotStatus ?? prev.cashpilotStatus,
         paypalStatus: syncData.currentPaypalStatus ?? prev.paypalStatus,
+        paypalStatusRaw: (syncData.paypalStatusRaw as Prisma.JsonValue) ?? prev.paypalStatusRaw,
         paypalPayerViewUrl: syncData.paypalPayerViewUrl ?? prev.paypalPayerViewUrl,
         lastSyncAt: syncData.lastSyncAt ?? new Date().toISOString(),
         syncIsStale: false,
@@ -862,6 +865,31 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
               </span>
             </div>
 
+            {invoice.paypalStatus === "PAID" && (
+              <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+                <span className="text-[#5E718D]">Settlement:</span>
+                <span className="text-[11px] font-semibold text-[#0C7C61]">
+                  Verified Paid
+                </span>
+              </div>
+            )}
+            {invoice.paypalStatus === "PARTIALLY_PAID" && (
+              <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+                <span className="text-[#5E718D]">Settlement:</span>
+                <span className="text-[11px] font-semibold text-[#7A5600]">
+                  Partial Payment
+                </span>
+              </div>
+            )}
+            {invoice.paypalStatus === "REFUNDED" && (
+              <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+                <span className="text-[#5E718D]">Settlement:</span>
+                <span className="text-[11px] font-semibold text-[#5B3FD0]">
+                  Refunded
+                </span>
+              </div>
+            )}
+
             {invoice.paypalPayerViewUrl && (
               <div className="py-2 border-b border-[#EEF2F6] space-y-1.5">
                 <div className="flex justify-between items-center">
@@ -928,6 +956,16 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
 
         {/* Right Column: Line Items & Totals & Audit Trail (2 cols) */}
         <div className="md:col-span-2 space-y-6">
+          {/* Verified PayPal Payment / Refund Details Card */}
+          <PayPalPaymentSummaryCard
+            paypalStatusRaw={invoice.paypalStatusRaw}
+            paypalStatus={invoice.paypalStatus}
+            currency={invoice.currency}
+            paypalInvoiceId={invoice.paypalInvoiceId}
+            paypalPayerViewUrl={invoice.paypalPayerViewUrl}
+            lastSyncAt={invoice.lastSyncAt}
+          />
+
           {/* Line Items Table Card */}
           <div className="rounded-2xl bg-white border border-[#E3E8EF] shadow-xs overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-[#E3E8EF] flex items-center justify-between">
