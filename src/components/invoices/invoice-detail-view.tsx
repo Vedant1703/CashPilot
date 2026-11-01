@@ -26,6 +26,9 @@ import {
   Clock,
   Info,
   ArrowRight,
+  ExternalLink,
+  Copy,
+  Check,
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
@@ -74,6 +77,7 @@ export interface SerializedInvoiceDetail {
   cashpilotStatus: CashPilotStatus;
   paypalInvoiceId: string | null;
   paypalStatus: string | null;
+  paypalPayerViewUrl?: string | null;
   lastSyncAt: string | null;
   syncIsStale: boolean;
   isDemoData: boolean;
@@ -113,6 +117,17 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isRemindModalOpen, setIsRemindModalOpen] = useState(false);
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const handleCopyPaymentLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      // Fallback
+    }
+  };
 
   // Eligible to send only if in DRAFT state and has a PayPal Sandbox draft created
   const canSend = invoice.cashpilotStatus === CashPilotStatus.DRAFT && Boolean(invoice.paypalInvoiceId);
@@ -189,6 +204,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
     paypalInvoiceId: string;
     paypalStatus: string;
     cashpilotStatus: CashPilotStatus;
+    paypalPayerViewUrl?: string | null;
     sentAt: string;
     correlationId?: string;
   }) => {
@@ -196,6 +212,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
       ...prev,
       cashpilotStatus: sendResult.cashpilotStatus,
       paypalStatus: sendResult.paypalStatus,
+      paypalPayerViewUrl: sendResult.paypalPayerViewUrl ?? prev.paypalPayerViewUrl,
       syncIsStale: false,
     }));
 
@@ -378,6 +395,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         ...prev,
         cashpilotStatus: syncData.currentCashpilotStatus ?? prev.cashpilotStatus,
         paypalStatus: syncData.currentPaypalStatus ?? prev.paypalStatus,
+        paypalPayerViewUrl: syncData.paypalPayerViewUrl ?? prev.paypalPayerViewUrl,
         lastSyncAt: syncData.lastSyncAt ?? new Date().toISOString(),
         syncIsStale: false,
       }));
@@ -410,10 +428,13 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         const refreshRes = await fetch(`/api/invoices/${invoice.id}?workspaceId=${invoice.workspaceId}`);
         if (refreshRes.ok) {
           const freshData = await refreshRes.json();
-          if (freshData.success && freshData.data.activities) {
+          if (freshData.success && (freshData.data.activities || freshData.data.invoice)) {
             setInvoice((prev) => ({
               ...prev,
-              activities: freshData.data.activities,
+              ...(freshData.data.invoice?.paypalPayerViewUrl
+                ? { paypalPayerViewUrl: freshData.data.invoice.paypalPayerViewUrl }
+                : {}),
+              activities: freshData.data.activities ?? freshData.data.invoice?.activities ?? prev.activities,
             }));
           }
         }
@@ -556,6 +577,42 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
             </button>
           )}
 
+          {/* Open PayPal Invoice Link (when payer-view URL is present) */}
+          {invoice.paypalPayerViewUrl && (
+            <a
+              href={invoice.paypalPayerViewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open PayPal invoice for customer payment"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[44px] rounded-xl bg-[#0C7C61] hover:bg-[#09624D] text-white text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
+            >
+              <ExternalLink className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Open PayPal invoice</span>
+            </a>
+          )}
+
+          {/* Copy Payment Link (when payer-view URL is present) */}
+          {invoice.paypalPayerViewUrl && (
+            <button
+              type="button"
+              onClick={() => handleCopyPaymentLink(invoice.paypalPayerViewUrl!)}
+              aria-label="Copy customer payment link to clipboard"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[44px] rounded-xl border border-[#A3D9CC] bg-[#E8F5F1] hover:bg-[#D4EFE8] text-[#0C7C61] text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
+            >
+              {copiedLink ? (
+                <>
+                  <Check className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Copied link!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Copy payment link</span>
+                </>
+              )}
+            </button>
+          )}
+
           {/* Safe Status Sync Action Button */}
           <button
             type="button"
@@ -623,6 +680,27 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
                   <span>See in Activity</span>
                   <ArrowRight className="w-3 h-3" />
                 </Link>
+              </div>
+            )}
+            {invoice.paypalPayerViewUrl && (
+              <div className="pt-2 flex flex-wrap items-center gap-2">
+                <a
+                  href={invoice.paypalPayerViewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold text-[#0C7C61] hover:underline bg-white px-2.5 py-1 rounded-lg border border-[#A3D9CC] shadow-2xs text-[11px]"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  <span>Open PayPal Invoice</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => handleCopyPaymentLink(invoice.paypalPayerViewUrl!)}
+                  className="inline-flex items-center gap-1 font-semibold text-[#0C7C61] hover:underline bg-white px-2.5 py-1 rounded-lg border border-[#A3D9CC] shadow-2xs text-[11px]"
+                >
+                  {copiedLink ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedLink ? "Copied!" : "Copy Payment Link"}</span>
+                </button>
               </div>
             )}
           </div>
@@ -783,6 +861,36 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
                 {invoice.cashpilotStatus}
               </span>
             </div>
+
+            {invoice.paypalPayerViewUrl && (
+              <div className="py-2 border-b border-[#EEF2F6] space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <span className="text-[#5E718D]">Payer View Link:</span>
+                  <span className="text-[10px] text-[#0C7C61] font-mono bg-[#E8F5F1] px-1.5 py-0.5 rounded">
+                    Verified
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={invoice.paypalPayerViewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0C7C61] hover:underline"
+                  >
+                    <span>Open PayPal Invoice</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                  <span className="text-[#CBD5E1]">|</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyPaymentLink(invoice.paypalPayerViewUrl!)}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F6CBD] hover:underline"
+                  >
+                    {copiedLink ? <span>Copied!</span> : <span>Copy Link</span>}
+                  </button>
+                </div>
+              </div>
+            )}
 
             <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
               <span className="text-[#5E718D]">Last Synced:</span>

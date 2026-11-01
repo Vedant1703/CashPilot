@@ -117,6 +117,7 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     cashpilotStatus: invoice.cashpilotStatus,
     paypalInvoiceId: invoice.paypalInvoiceId,
     paypalStatus: invoice.paypalStatus,
+    paypalPayerViewUrl: invoice.paypalPayerViewUrl,
     lastSyncAt: invoice.lastSyncAt ? invoice.lastSyncAt.toISOString() : null,
     syncIsStale: invoice.syncIsStale,
     isDemoData: invoice.isDemoData,

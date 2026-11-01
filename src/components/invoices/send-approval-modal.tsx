@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { formatMoney } from "@/lib/money";
-import { Lock, AlertTriangle, Send, X, ShieldCheck, RefreshCw } from "lucide-react";
+import { Lock, AlertTriangle, Send, X, ShieldCheck, RefreshCw, CheckCircle2, ExternalLink, Copy, Check } from "lucide-react";
 import { SerializedInvoiceDetail } from "./invoice-detail-view";
 import { CashPilotStatus } from "@prisma/client";
 
@@ -17,6 +17,7 @@ interface SendApprovalModalProps {
     paypalInvoiceId: string;
     paypalStatus: string;
     cashpilotStatus: CashPilotStatus;
+    paypalPayerViewUrl?: string | null;
     sentAt: string;
     correlationId?: string;
   }) => void;
@@ -32,24 +33,55 @@ export function SendApprovalModal({
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStep, setProcessingStep] = useState<"idle" | "approving" | "sending">("idle");
   const [error, setError] = useState<string | null>(null);
+  const [successResult, setSuccessResult] = useState<{
+    operationId: string;
+    invoiceId: string;
+    paypalInvoiceId: string;
+    paypalStatus: string;
+    cashpilotStatus: CashPilotStatus;
+    paypalPayerViewUrl?: string | null;
+    sentAt: string;
+    correlationId?: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   // Close on Escape key
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !isProcessing) {
+        if (successResult) {
+          onSendSuccess(successResult);
+        }
         onClose();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isProcessing, onClose]);
+  }, [isOpen, isProcessing, onClose, successResult, onSendSuccess]);
 
   if (!isOpen) return null;
 
   const formattedTotal = formatMoney(invoice.totalMinorUnits, invoice.currency);
   const formattedSubtotal = formatMoney(invoice.subtotalMinorUnits, invoice.currency);
   const formattedTax = formatMoney(invoice.taxMinorUnits, invoice.currency);
+
+  const handleCopyLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback
+    }
+  };
+
+  const handleFinishSuccess = () => {
+    if (successResult) {
+      onSendSuccess(successResult);
+    }
+    onClose();
+  };
 
   const handleApproveAndSend = async () => {
     // Prevent duplicate concurrent submissions
@@ -121,9 +153,8 @@ export function SendApprovalModal({
         return;
       }
 
-      // Step 3: Success!
-      onSendSuccess(sendJson.data);
-      onClose();
+      // Step 3: Success! Transition to success state with payer link actions
+      setSuccessResult(sendJson.data);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Network error during approval and sending."
@@ -133,6 +164,117 @@ export function SendApprovalModal({
       setProcessingStep("idle");
     }
   };
+
+  if (successResult) {
+    const payerViewUrl = successResult.paypalPayerViewUrl;
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="send-success-title"
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto"
+      >
+        <div className="relative w-full max-w-xl my-8 rounded-2xl bg-white border-2 border-[#0C7C61] shadow-2xl p-6 sm:p-8 space-y-6 text-[#12263F] animate-in zoom-in-95 duration-150">
+          <button
+            type="button"
+            onClick={handleFinishSuccess}
+            aria-label="Close modal"
+            className="absolute top-5 right-5 p-2 rounded-xl text-[#5E718D] hover:text-[#12263F] hover:bg-[#F6F5F1] transition-colors min-h-[44px] min-w-[44px] flex items-center justify-center focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
+          >
+            <X className="w-5 h-5" aria-hidden="true" />
+          </button>
+
+          <div className="flex items-start gap-3.5 pr-8">
+            <div className="p-3 rounded-xl bg-[#E8F5F1] text-[#0C7C61] border border-[#A3D9CC] shrink-0">
+              <CheckCircle2 className="w-6 h-6 stroke-[2.5]" aria-hidden="true" />
+            </div>
+            <div>
+              <h2 id="send-success-title" className="font-headline font-bold text-lg sm:text-xl text-[#12263F]">
+                Invoice Dispatched via PayPal Sandbox
+              </h2>
+              <p className="text-xs text-[#5E718D] mt-1">
+                Invoice {invoice.number ?? invoice.id} has been transmitted to <span className="font-semibold text-[#12263F]">{invoice.client.email}</span>.
+              </p>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-[#F6F5F1] border border-[#E3E8EF] space-y-2 text-xs">
+            <div className="flex justify-between">
+              <span className="text-[#5E718D]">PayPal Provider Status:</span>
+              <span className="font-mono font-semibold text-[#12263F]">SENT</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-[#5E718D]">CashPilot Workflow State:</span>
+              <span className="font-semibold text-[#0C7C61]">Awaiting Payment</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-[#5E718D]">Provider Invoice ID:</span>
+              <span className="font-mono text-[#12263F]">{successResult.paypalInvoiceId}</span>
+            </div>
+          </div>
+
+          {payerViewUrl ? (
+            <div className="p-4 rounded-xl bg-[#E8F5F1]/60 border border-[#A3D9CC] space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-[#0C7C61] flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-[#0C7C61]" />
+                  <span>PayPal Customer Payment Link</span>
+                </span>
+                <span className="text-[10px] font-mono text-[#0C7C61] bg-[#E8F5F1] px-2 py-0.5 rounded">
+                  Sandbox Verified
+                </span>
+              </div>
+              <p className="text-xs text-[#5E718D]">
+                Direct link for the customer to view and pay this invoice on PayPal Sandbox:
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <a
+                  href={payerViewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 min-h-[40px] rounded-xl bg-[#0C7C61] hover:bg-[#09624D] text-white text-xs font-semibold shadow-xs transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+                  <span>Open PayPal Invoice</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => handleCopyLink(payerViewUrl)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 min-h-[40px] rounded-xl border border-[#A3D9CC] bg-white hover:bg-[#F6F5F1] text-xs font-semibold text-[#0C7C61] transition-colors"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-[#0C7C61]" aria-hidden="true" />
+                      <span>Copied to Clipboard!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Copy Payment Link</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-[#5E718D] italic">
+              Note: Payer-view link will be populated during the next status sync.
+            </p>
+          )}
+
+          <div className="flex justify-end pt-2 border-t border-[#E3E8EF]">
+            <button
+              type="button"
+              onClick={handleFinishSuccess}
+              className="px-5 py-2.5 min-h-[44px] rounded-xl bg-[#12263F] hover:bg-[#1C3A5E] text-white text-xs font-semibold shadow-xs transition-colors"
+            >
+              Done & Return to Invoice
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

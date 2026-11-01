@@ -124,6 +124,7 @@ model Invoice {
   paypalInvoiceId     String?   // provider-assigned ID after draft creation
   paypalStatus        String?   // raw provider status string (DRAFT, SENT, PAID, etc.)
   paypalStatusRaw     Json?     // full raw provider status object for audit
+  paypalPayerViewUrl  String?   // official PayPal payer-view link for recipient payment
   lastSyncAt          DateTime? // last successful status retrieval from provider
   syncIsStale         Boolean   @default(false) // true if last refresh failed
 
