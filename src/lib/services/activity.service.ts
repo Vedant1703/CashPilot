@@ -751,6 +751,23 @@ export async function getInvoiceEndToEndTrace(
       status: "flagged",
       details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp?.providerInvoiceId ?? "Unknown"}${rawPaypalStatus ? ` · Last known status: ${rawPaypalStatus}` : ""}`,
     });
+  } else if (
+    invoice.paymentProvenance === "SIMULATED_DEMO_PAYMENT" ||
+    rawCashpilotStatus === CashPilotStatus.SIMULATED_PAID
+  ) {
+    const timeStr = formatTime(
+      invoice.simulatedPaymentAt ?? invoice.updatedAt
+    );
+    steps.push({
+      stepNumber: 5,
+      title: "Payment simulation (Demo)",
+      badgeLabel: "Simulated",
+      badgeVariant: "confirmed",
+      summary: `${timeStr} · payment simulated (no real money moved)`,
+      timestamp: (invoice.simulatedPaymentAt ?? invoice.updatedAt).toISOString(),
+      status: "completed",
+      details: `Simulation Ref: ${invoice.simulatedRef ?? "SIM-DEMO"} · Demo simulation only · No PayPal API calls executed`,
+    });
   } else if (rawPaypalStatus === "PAID" || rawCashpilotStatus === CashPilotStatus.PAID) {
     const timeStr = formatTime(invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt);
     steps.push({

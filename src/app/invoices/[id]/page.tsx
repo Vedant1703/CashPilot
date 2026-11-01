@@ -122,6 +122,10 @@ async function InvoiceDetailContent({ params }: InvoiceDetailPageProps) {
     lastSyncAt: invoice.lastSyncAt ? invoice.lastSyncAt.toISOString() : null,
     syncIsStale: invoice.syncIsStale,
     isDemoData: invoice.isDemoData,
+    paymentProvenance: invoice.paymentProvenance,
+    simulatedPaymentAt: invoice.simulatedPaymentAt ? invoice.simulatedPaymentAt.toISOString() : null,
+    simulatedAmountMinorUnits: invoice.simulatedAmountMinorUnits,
+    simulatedRef: invoice.simulatedRef,
     aiDraftId: invoice.aiDraftId,
     client: {
       id: invoice.client.id,

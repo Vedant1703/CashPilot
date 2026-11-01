@@ -29,12 +29,15 @@ import {
   ExternalLink,
   Copy,
   Check,
+  Sparkles,
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
 import { CancelApprovalModal } from "./cancel-approval-modal";
+import { SimulatePaymentModal } from "./simulate-payment-modal";
 import { canSendReminder, canCancelInvoice } from "@/lib/paypal/status-mapper";
 import { PayPalPaymentSummaryCard } from "./paypal-payment-summary-card";
+import { SimulatedPaymentSummaryCard } from "./simulated-payment-summary-card";
 
 export interface SerializedActivityEvent {
   id: string;
@@ -83,6 +86,10 @@ export interface SerializedInvoiceDetail {
   lastSyncAt: string | null;
   syncIsStale: boolean;
   isDemoData: boolean;
+  paymentProvenance?: string | null;
+  simulatedPaymentAt?: string | null;
+  simulatedAmountMinorUnits?: number | null;
+  simulatedRef?: string | null;
   aiDraftId: string | null;
   client: {
     id: string;
@@ -119,6 +126,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isRemindModalOpen, setIsRemindModalOpen] = useState(false);
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+  const [isSimulateModalOpen, setIsSimulateModalOpen] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
   const handleCopyPaymentLink = async (url: string) => {
@@ -131,11 +139,37 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
     }
   };
 
+  const isDemo = Boolean(invoice.workspace?.isDemo ?? invoice.isDemoData);
+  const isSimulated =
+    invoice.paymentProvenance === "SIMULATED_DEMO_PAYMENT" ||
+    invoice.cashpilotStatus === CashPilotStatus.SIMULATED_PAID;
+  const isAlreadyPaid =
+    invoice.cashpilotStatus === CashPilotStatus.PAID ||
+    invoice.paypalStatus === "PAID" ||
+    isSimulated;
+  const isCancelled =
+    invoice.cashpilotStatus === CashPilotStatus.CANCELLED ||
+    invoice.paypalStatus === "CANCELLED" ||
+    invoice.paypalStatus === "VOIDED";
+  const isRefunded =
+    invoice.paypalStatus === "REFUNDED" ||
+    invoice.paypalStatus === "PARTIALLY_REFUNDED";
+  const isPartiallyPaid = invoice.paypalStatus === "PARTIALLY_PAID";
+
+  // Simulation strictly allowed for eligible demo invoices in Demo Workspace
+  const canSimulate =
+    isDemo &&
+    invoice.isDemoData &&
+    !isAlreadyPaid &&
+    !isCancelled &&
+    !isRefunded &&
+    !isPartiallyPaid;
+
   // Eligible to send only if in DRAFT state and has a PayPal Sandbox draft created
   const canSend = invoice.cashpilotStatus === CashPilotStatus.DRAFT && Boolean(invoice.paypalInvoiceId);
 
-  // Eligible for reminder only if in AWAITING_PAYMENT, DUE_SOON, or OVERDUE and has PayPal invoice ID
-  const isReminderStatusEligible = canSendReminder(invoice.cashpilotStatus) && Boolean(invoice.paypalInvoiceId);
+  // Eligible for reminder only if in AWAITING_PAYMENT, DUE_SOON, or OVERDUE, not simulated, and has PayPal invoice ID
+  const isReminderStatusEligible = !isSimulated && canSendReminder(invoice.cashpilotStatus) && Boolean(invoice.paypalInvoiceId);
 
   // Cooldown: at most once every 24 hours
   const isWithinReminderCooldown = Boolean(
@@ -153,12 +187,49 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
     }
   }, [canRemind]);
 
-  // Eligible for cancellation: sent unpaid invoice with fresh provider state
+  // Eligible for cancellation: sent unpaid invoice with fresh provider state, not simulated
   const canCancel =
+    !isSimulated &&
     Boolean(invoice.paypalInvoiceId) &&
     canCancelInvoice(invoice.cashpilotStatus, invoice.paypalStatus) &&
     !invoice.syncIsStale &&
     invoice.cashpilotStatus !== CashPilotStatus.NEEDS_REVIEW;
+
+  const handleSimulateSuccess = (result: {
+    invoiceId: string;
+    paymentProvenance: string;
+    cashpilotStatus: CashPilotStatus;
+    simulatedAmountMinorUnits: number;
+    simulatedPaymentAt: string;
+    simulatedRef: string;
+  }) => {
+    setInvoice((prev) => ({
+      ...prev,
+      cashpilotStatus: result.cashpilotStatus,
+      paymentProvenance: result.paymentProvenance,
+      simulatedAmountMinorUnits: result.simulatedAmountMinorUnits,
+      simulatedPaymentAt: result.simulatedPaymentAt,
+      simulatedRef: result.simulatedRef,
+      activities: [
+        {
+          id: `act-sim-${Date.now()}`,
+          eventType: "SYSTEM_EVENT",
+          actorType: "USER",
+          actorId: "demo-user-1",
+          description: `[SIMULATED PAYMENT] Simulated payment of ${formatMoney(result.simulatedAmountMinorUnits, prev.currency)} confirmed — no real money moved. Ref: ${result.simulatedRef}`,
+          createdAt: result.simulatedPaymentAt,
+          metadata: {
+            simulated: true,
+            amountMinorUnits: result.simulatedAmountMinorUnits,
+            currency: prev.currency,
+            ref: result.simulatedRef,
+            note: "Simulated payment — no real money moved",
+          },
+        },
+        ...(prev.activities ?? []),
+      ],
+    }));
+  };
 
   const handleCancelSuccess = (cancelResult: {
     operationId: string;
@@ -580,6 +651,19 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
             </button>
           )}
 
+          {/* Simulate Payment Action Button (Strictly Demo Workspace & eligible invoices) */}
+          {canSimulate && (
+            <button
+              type="button"
+              onClick={() => setIsSimulateModalOpen(true)}
+              aria-label="Simulate payment in Demo Workspace"
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#16A34A] focus-visible:outline-hidden"
+            >
+              <Sparkles className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Simulate payment</span>
+            </button>
+          )}
+
           {/* Open PayPal Invoice Link (when payer-view URL is present) */}
           {invoice.paypalPayerViewUrl && (
             <a
@@ -956,6 +1040,17 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
 
         {/* Right Column: Line Items & Totals & Audit Trail (2 cols) */}
         <div className="md:col-span-2 space-y-6">
+          {/* Demo Payment Simulation Summary Card */}
+          <SimulatedPaymentSummaryCard
+            paymentProvenance={invoice.paymentProvenance}
+            cashpilotStatus={invoice.cashpilotStatus}
+            simulatedAmountMinorUnits={invoice.simulatedAmountMinorUnits}
+            totalMinorUnits={invoice.totalMinorUnits}
+            currency={invoice.currency}
+            simulatedPaymentAt={invoice.simulatedPaymentAt}
+            simulatedRef={invoice.simulatedRef}
+          />
+
           {/* Verified PayPal Payment / Refund Details Card */}
           <PayPalPaymentSummaryCard
             paypalStatusRaw={invoice.paypalStatusRaw}
@@ -1124,6 +1219,14 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         invoice={invoice}
         materialPayloadHash={invoice.cancelMaterialPayloadHash ?? ""}
         onCancelSuccess={handleCancelSuccess}
+      />
+
+      {/* Demo Payment Simulation Modal */}
+      <SimulatePaymentModal
+        isOpen={isSimulateModalOpen}
+        onClose={() => setIsSimulateModalOpen(false)}
+        invoice={invoice}
+        onSimulateSuccess={handleSimulateSuccess}
       />
 
       {/* MVP Limitations Notice */}

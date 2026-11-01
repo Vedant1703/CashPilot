@@ -32,6 +32,11 @@ export interface InvoiceRecord {
   invoiceDate: Date | string;
   dueDate: Date | string;
   cashpilotStatus: CashPilotStatus;
+  paymentProvenance?: string | null;
+  simulatedPaymentAt?: Date | string | null;
+  simulatedAmountMinorUnits?: number | null;
+  simulatedActorId?: string | null;
+  simulatedRef?: string | null;
   paypalStatus: string | null;
   paypalInvoiceId: string | null;
   isDemoData: boolean;
@@ -117,7 +122,14 @@ export interface GroupedCollections {
 }
 
 export interface InvoiceProvenance {
-  type: "PAYPAL_VERIFIED" | "DEMO_PAYPAL_VERIFIED" | "AI_DRAFTED" | "SAMPLE_DATA" | "NEEDS_REVIEW" | "LOCAL_DRAFT";
+  type:
+    | "PAYPAL_VERIFIED"
+    | "DEMO_PAYPAL_VERIFIED"
+    | "AI_DRAFTED"
+    | "SAMPLE_DATA"
+    | "NEEDS_REVIEW"
+    | "LOCAL_DRAFT"
+    | "SIMULATED_DEMO_PAYMENT";
   label: string;
   symbol: string;
   badgeClass: string;
@@ -146,6 +158,19 @@ export function diffInDays(targetDate: Date, referenceDate: Date): number {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function getInvoiceProvenance(invoice: InvoiceRecord): InvoiceProvenance {
+  // Phase 3C: Demo Payment Simulation takes precedence and must never be labeled PayPal-verified
+  if (
+    invoice.paymentProvenance === "SIMULATED_DEMO_PAYMENT" ||
+    invoice.cashpilotStatus === CashPilotStatus.SIMULATED_PAID
+  ) {
+    return {
+      type: "SIMULATED_DEMO_PAYMENT",
+      label: "Simulated Payment · No real money moved",
+      symbol: "✦",
+      badgeClass: "bg-[#E8F5F1] text-[#0C7C61] border-[#A3D9CC]",
+    };
+  }
+
   if (invoice.syncIsStale) {
     return {
       type: "NEEDS_REVIEW",
@@ -231,6 +256,8 @@ export function calculateDashboardMetrics(
     if (inv.cashpilotStatus === CashPilotStatus.DRAFT) return false;
     if (inv.cashpilotStatus === CashPilotStatus.NEEDS_REVIEW) return false;
     if (inv.cashpilotStatus === CashPilotStatus.PAID) return false;
+    if (inv.cashpilotStatus === CashPilotStatus.SIMULATED_PAID) return false;
+    if (inv.paymentProvenance === "SIMULATED_DEMO_PAYMENT") return false;
     if (inv.paypalStatus === "PAID") return false;
 
     // Must be in sent lifecycle stage (AWAITING_PAYMENT, DUE_SOON, OVERDUE)
@@ -513,7 +540,12 @@ export function groupInvoicesForCollections(
       continue;
     }
 
-    if (inv.cashpilotStatus === CashPilotStatus.PAID || inv.paypalStatus === "PAID") {
+    if (
+      inv.cashpilotStatus === CashPilotStatus.PAID ||
+      inv.cashpilotStatus === CashPilotStatus.SIMULATED_PAID ||
+      inv.paymentProvenance === "SIMULATED_DEMO_PAYMENT" ||
+      inv.paypalStatus === "PAID"
+    ) {
       columns.paid.push(inv);
       continue;
     }

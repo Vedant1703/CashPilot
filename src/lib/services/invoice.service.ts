@@ -46,6 +46,7 @@ import {
   ActivityEventType,
   ActorType,
   Prisma,
+  PaymentProvenance,
 } from "@prisma/client";
 import { createHash } from "crypto";
 import {
@@ -205,6 +206,11 @@ export async function getInvoice(invoiceId: string, workspaceId: string) {
         paypalPayerViewUrl: invoice.paypalPayerViewUrl,
         lastSyncAt: invoice.lastSyncAt,
         syncIsStale: invoice.syncIsStale,
+        paymentProvenance: invoice.paymentProvenance,
+        simulatedPaymentAt: invoice.simulatedPaymentAt,
+        simulatedAmountMinorUnits: invoice.simulatedAmountMinorUnits,
+        simulatedActorId: invoice.simulatedActorId,
+        simulatedRef: invoice.simulatedRef,
         isDemoData: invoice.isDemoData,
         aiDraftId: invoice.aiDraftId,
         createdAt: invoice.createdAt,
@@ -404,6 +410,11 @@ export async function createInvoice(
         paypalPayerViewUrl: invoice.paypalPayerViewUrl,
         lastSyncAt: invoice.lastSyncAt,
         syncIsStale: invoice.syncIsStale,
+        paymentProvenance: invoice.paymentProvenance,
+        simulatedPaymentAt: invoice.simulatedPaymentAt,
+        simulatedAmountMinorUnits: invoice.simulatedAmountMinorUnits,
+        simulatedActorId: invoice.simulatedActorId,
+        simulatedRef: invoice.simulatedRef,
         isDemoData: invoice.isDemoData,
         aiDraftId: invoice.aiDraftId,
         createdAt: invoice.createdAt,
@@ -2725,11 +2736,18 @@ export async function syncInvoiceWithPayPal(
     };
   }
 
+  // Refinement 4: Where provider response supplies an ID, verify it matches the persisted paypalInvoiceId
+  if (statusResult.data.id && statusResult.data.id !== invoice.paypalInvoiceId) {
+    return {
+      ok: false,
+      error: `PayPal response ID mismatch: expected ${invoice.paypalInvoiceId}, received ${statusResult.data.id}. Status rejected for safety.`,
+      code: "PROVIDER_ID_MISMATCH",
+    };
+  }
+
   // 7. Map provider status to CashPilot status using existing tested engine
   const mapped = mapPayPalStatusToCashPilot(rawStatus, invoice.dueDate);
   const newCashpilotStatus = mapped.cashpilotStatus;
-  const statusChanged =
-    previousPaypalStatus !== rawStatus || previousCashpilotStatus !== newCashpilotStatus;
 
   // 8. Find any unknown-outcome operations on this invoice to reconcile
   const unknownOps = await db.externalOperation.findMany({
@@ -2744,6 +2762,27 @@ export async function syncInvoiceWithPayPal(
 
   // 9. Persist verified status inside a database transaction with optimistic concurrency
   let overwrittenByNewer = false;
+
+  // Financial Safety (Phase 3C Refinement 1): Calculate effective persisted CashPilot status.
+  // If invoice was simulated as paid in demo workspace, a non-PAID PayPal status (e.g. SENT)
+  // must not wipe out the simulated provenance or revert CashPilot status, and must never
+  // convert it into a PayPal-verified payment without actual provider evidence (rawStatus === 'PAID').
+  const isSimulatedPaid = invoice.paymentProvenance === PaymentProvenance.SIMULATED_DEMO_PAYMENT;
+  const hasActualPayPalPaidEvidence = rawStatus === "PAID";
+
+  const effectiveCashpilotStatus =
+    isSimulatedPaid && !hasActualPayPalPaidEvidence
+      ? CashPilotStatus.SIMULATED_PAID
+      : newCashpilotStatus;
+
+  const effectivePaymentProvenance = hasActualPayPalPaidEvidence
+    ? PaymentProvenance.PAYPAL_VERIFIED
+    : isSimulatedPaid
+    ? PaymentProvenance.SIMULATED_DEMO_PAYMENT
+    : invoice.paymentProvenance;
+
+  const effectiveStatusChanged =
+    previousPaypalStatus !== rawStatus || previousCashpilotStatus !== effectiveCashpilotStatus;
 
   await db.$transaction(async (tx) => {
     // Stale response protection: Ensure no newer sync finished while this fetch was in flight
@@ -2765,7 +2804,8 @@ export async function syncInvoiceWithPayPal(
     const invoiceUpdateData: Prisma.InvoiceUpdateInput = {
       paypalStatus: rawStatus,
       paypalStatusRaw: statusResult.data as unknown as Prisma.InputJsonValue,
-      cashpilotStatus: newCashpilotStatus,
+      cashpilotStatus: effectiveCashpilotStatus,
+      paymentProvenance: effectivePaymentProvenance,
       lastSyncAt: now,
       syncIsStale: false,
     };
@@ -2833,7 +2873,7 @@ export async function syncInvoiceWithPayPal(
       }
     }
 
-    // Record activity audit event
+    // Record activity audit event with consistent effective CashPilot status
     const eventType =
       unknownOps.length > 0
         ? ActivityEventType.STATUS_SYNC_RECONCILED
@@ -2841,8 +2881,8 @@ export async function syncInvoiceWithPayPal(
 
     const description =
       unknownOps.length > 0
-        ? `Status sync reconciled ${unknownOps.length} uncertain operation(s). PayPal: ${rawStatus} → CashPilot: ${newCashpilotStatus}`
-        : `Status synchronized with PayPal Sandbox. Provider status: ${rawStatus} → CashPilot: ${newCashpilotStatus}`;
+        ? `Status sync reconciled ${unknownOps.length} uncertain operation(s). PayPal: ${rawStatus} → CashPilot: ${effectiveCashpilotStatus}`
+        : `Status synchronized with PayPal Sandbox. Provider status: ${rawStatus} → CashPilot: ${effectiveCashpilotStatus}`;
 
     await tx.activityEvent.create({
       data: {
@@ -2856,10 +2896,10 @@ export async function syncInvoiceWithPayPal(
         metadata: {
           paypalInvoiceId: invoice.paypalInvoiceId,
           providerStatus: rawStatus,
-          cashpilotStatus: newCashpilotStatus,
+          cashpilotStatus: effectiveCashpilotStatus,
           previousPaypalStatus,
           previousCashpilotStatus,
-          statusChanged,
+          statusChanged: effectiveStatusChanged,
           reconciledOperationsCount: unknownOps.length,
           correlationId: statusResult.correlationId,
         },
@@ -2876,8 +2916,8 @@ export async function syncInvoiceWithPayPal(
       previousPaypalStatus,
       currentPaypalStatus: rawStatus,
       previousCashpilotStatus,
-      currentCashpilotStatus: newCashpilotStatus,
-      statusChanged: overwrittenByNewer ? false : statusChanged,
+      currentCashpilotStatus: effectiveCashpilotStatus,
+      statusChanged: overwrittenByNewer ? false : effectiveStatusChanged,
       isStale: false,
       reconciledOperationsCount: unknownOps.length,
       lastSyncAt: now,
