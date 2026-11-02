@@ -54,6 +54,7 @@ import {
   groupInvoicesForCollections,
   type InvoiceRecord,
 } from "@/lib/dashboard/metrics";
+import { DEMO_WORKSPACE_ID } from "@/lib/services/demo.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Result types
@@ -340,7 +341,7 @@ export async function createInvoice(
         invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : new Date(),
         dueDate: new Date(data.dueDate + "T00:00:00Z"),
         cashpilotStatus: CashPilotStatus.DRAFT,
-        isDemoData: client.isDemo,
+        isDemoData: workspaceId === DEMO_WORKSPACE_ID && client.isDemo,
       },
       include: {
         client: true,

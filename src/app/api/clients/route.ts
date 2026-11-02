@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
  * Creates a new client within the authenticated user's workspace.
  * Rejects unauthenticated requests with 401.
  * Validates request payload server-side using createClientSchema.
- * Strictly derives workspaceId from session and forces isDemo to false.
+ * Strictly derives workspaceId from session and determines isDemo server-side from canonical Demo Workspace.
  */
 export async function POST(req: NextRequest) {
   const auth = await authorizeWorkspaceAccess(req);
@@ -96,9 +96,10 @@ export async function POST(req: NextRequest) {
 
   const result = await createClient(auth.context.workspaceId, parsed.data);
   if (!result.ok) {
+    const status = result.code === "WORKSPACE_NOT_FOUND" ? 404 : 500;
     return NextResponse.json(
       { success: false, error: result.error, code: result.code },
-      { status: 500 }
+      { status }
     );
   }
 

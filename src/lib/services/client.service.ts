@@ -12,6 +12,7 @@
 import { db } from "@/lib/db/client";
 import { Prisma } from "@prisma/client";
 import type { CreateClientInput, UpdateClientInput } from "@/lib/validations/client";
+import { DEMO_WORKSPACE_ID } from "@/lib/services/demo.service";
 
 export type ServiceResult<T> =
   | { ok: true; data: T }
@@ -117,13 +118,31 @@ export async function getClientById(
 
 /**
  * Creates a new client within the authenticated workspace.
- * Invariant: `isDemo` is always hardcoded to false for user-created clients.
+ * Invariant: `isDemo` is set to true only when workspaceId is DEMO_WORKSPACE_ID and workspace.isDemo is true.
+ * For all User Workspaces, `isDemo` is strictly false. Client-supplied isDemo values are never trusted.
  */
 export async function createClient(
   workspaceId: string,
   data: CreateClientInput
 ): Promise<ServiceResult<ClientWithCount>> {
   try {
+    const workspace = await db.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { id: true, isDemo: true },
+    });
+
+    if (!workspace) {
+      return {
+        ok: false,
+        error: "Workspace not found.",
+        code: "WORKSPACE_NOT_FOUND",
+      };
+    }
+
+    // Set newly created clients to isDemo: true only when their authenticated
+    // workspace is the canonical Demo Workspace and isDemo === true.
+    const isDemo = workspace.id === DEMO_WORKSPACE_ID && workspace.isDemo === true;
+
     const client = await db.client.create({
       data: {
         workspaceId,
@@ -132,7 +151,7 @@ export async function createClient(
         phone: data.phone ?? null,
         company: data.company ?? null,
         notes: data.notes ?? null,
-        isDemo: false,
+        isDemo,
       },
       include: {
         _count: {
