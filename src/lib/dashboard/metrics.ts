@@ -113,11 +113,19 @@ export interface GroupedCollections {
     paid: number;
     needsReview: number;
     cancelled: number;
+    simulatedPaid?: number;
   };
 }
 
 export interface InvoiceProvenance {
-  type: "PAYPAL_VERIFIED" | "DEMO_PAYPAL_VERIFIED" | "AI_DRAFTED" | "SAMPLE_DATA" | "NEEDS_REVIEW" | "LOCAL_DRAFT";
+  type:
+    | "PAYPAL_VERIFIED"
+    | "DEMO_PAYPAL_VERIFIED"
+    | "SIMULATED_PAID"
+    | "AI_DRAFTED"
+    | "SAMPLE_DATA"
+    | "NEEDS_REVIEW"
+    | "LOCAL_DRAFT";
   label: string;
   symbol: string;
   badgeClass: string;
@@ -161,6 +169,16 @@ export function getInvoiceProvenance(invoice: InvoiceRecord): InvoiceProvenance 
       label: "Needs Review · Unrecognised Status",
       symbol: "▲",
       badgeClass: "bg-[#FDF2EB] text-[#B4440B] border-[#F7C4A5]",
+    };
+  }
+
+  // Simulated paid in demo workspace (no real money moved)
+  if (invoice.cashpilotStatus === CashPilotStatus.PAID && invoice.isDemoData) {
+    return {
+      type: "SIMULATED_PAID",
+      label: "Simulated Paid · No real money",
+      symbol: "✓",
+      badgeClass: "bg-[#EBF3FC] text-[#1D5BD8] border-[#B9D7F9]",
     };
   }
 
@@ -305,10 +323,15 @@ export function calculateDashboardMetrics(
   const currentMonth = now.getUTCMonth();
   const currentYear = now.getUTCFullYear();
 
+  const hasRealInvoices = invoices.some((inv) => !inv.isDemoData);
+
   const paidThisMonthInvoices = invoices.filter((inv) => {
     const isPaid =
       inv.cashpilotStatus === CashPilotStatus.PAID || inv.paypalStatus === "PAID";
     if (!isPaid) return false;
+
+    // Simulated payments are excluded from real revenue when real invoices are present
+    if (hasRealInvoices && inv.isDemoData) return false;
 
     // Determine relevant paid timestamp (lastSyncAt, updatedAt, or invoiceDate)
     const refDate = parseDate(inv.lastSyncAt ?? inv.updatedAt ?? inv.invoiceDate);
@@ -446,10 +469,12 @@ export function calculateDashboardMetrics(
       currency,
       contextText:
         paidThisMonthCount > 0
-          ? `${paidThisMonthCount} invoice${paidThisMonthCount === 1 ? "" : "s"} · confirmed by PayPal`
+          ? hasRealInvoices
+            ? `${paidThisMonthCount} invoice${paidThisMonthCount === 1 ? "" : "s"} · confirmed by PayPal`
+            : `${paidThisMonthCount} demo payment${paidThisMonthCount === 1 ? "" : "s"} (simulated · no real money moved)`
           : "0 payments recorded this month",
       href: "/collections?stage=paid",
-      badgeText: paidThisMonthCount > 0 ? "Confirmed" : undefined,
+      badgeText: paidThisMonthCount > 0 ? (hasRealInvoices ? "Confirmed" : "Simulated") : undefined,
       badgeType: "teal",
     },
     stageBreakdown: {
@@ -569,6 +594,9 @@ export function groupInvoicesForCollections(
       paid: columns.paid.length,
       needsReview: tray.needsReview.length,
       cancelled: tray.cancelled.length,
+      simulatedPaid: invoices.filter(
+        (inv) => inv.cashpilotStatus === CashPilotStatus.PAID && inv.isDemoData
+      ).length,
     },
   };
 }

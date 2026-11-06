@@ -305,7 +305,7 @@ function KanbanCard({ invoice, now, onDragAttempt }: KanbanCardProps) {
             {invoice.number ?? invoice.id.slice(0, 8)}
           </span>
 
-          <StatusBadge status={invoice.cashpilotStatus} size="sm" />
+          <StatusBadge status={invoice.cashpilotStatus} isDemoData={invoice.isDemoData} size="sm" />
         </div>
 
         {/* Client & Title */}

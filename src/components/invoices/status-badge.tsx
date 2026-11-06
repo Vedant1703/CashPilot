@@ -5,24 +5,37 @@ interface StatusBadgeProps {
   status: CashPilotStatus | string;
   size?: "sm" | "md";
   className?: string;
+  isDemoData?: boolean;
+  isSimulatedPaid?: boolean;
 }
 
 export function StatusBadge({
   status,
   size = "md",
   className = "",
+  isDemoData = false,
+  isSimulatedPaid = false,
 }: StatusBadgeProps) {
   const norm = status.toUpperCase();
 
   let label = norm;
   let symbol = "●";
   let colorClasses = "bg-[#F4F6F8] text-[#5E718D] border-[#E3E8EF]";
+  let title: string | undefined = undefined;
 
   switch (norm) {
     case CashPilotStatus.PAID:
-      label = "Paid";
-      symbol = "✓";
-      colorClasses = "bg-[#E8F5F1] text-[#0C7C61] border-[#A3D9CC]";
+      if (isDemoData || isSimulatedPaid) {
+        label = "Simulated Paid";
+        symbol = "✓";
+        colorClasses = "bg-[#EBF3FC] text-[#1D5BD8] border-[#B9D7F9]";
+        title = "Simulated in Demo workspace (no real money moved)";
+      } else {
+        label = "Paid";
+        symbol = "✓";
+        colorClasses = "bg-[#E8F5F1] text-[#0C7C61] border-[#A3D9CC]";
+        title = "Verified PayPal payment";
+      }
       break;
     case CashPilotStatus.AWAITING_PAYMENT:
       label = "Awaiting Payment";
@@ -66,6 +79,7 @@ export function StatusBadge({
     <span
       className={`inline-flex items-center gap-1.5 font-medium rounded-full border ${paddingClasses} ${colorClasses} ${className}`}
       role="status"
+      title={title}
     >
       <span className="font-mono text-[11px] leading-none select-none" aria-hidden="true">
         {symbol}

@@ -30,7 +30,14 @@ export function parseStatusParam(param: string | null | undefined): string {
     case "overdue":
       return "OVERDUE";
     case "paid":
+    case "paypal_paid":
       return "PAID";
+    case "simulated_paid":
+    case "simulated-paid":
+    case "simulated":
+      return "SIMULATED_PAID";
+    case "cancelled":
+      return "CANCELLED";
     case "needs_review":
     case "needsreview":
       return "NEEDS_REVIEW";
@@ -51,6 +58,10 @@ export function filterToStatusParam(filterKey: string): string | null {
       return "overdue";
     case "PAID":
       return "paid";
+    case "SIMULATED_PAID":
+      return "simulated_paid";
+    case "CANCELLED":
+      return "cancelled";
     case "NEEDS_REVIEW":
       return "needs_review";
     default:
@@ -105,16 +116,24 @@ export function InvoiceTable({
     };
   }, []);
 
+  const hasDemoInvoices = useMemo(() => invoices.some((i) => i.isDemoData), [invoices]);
+
   // Filter tabs config
-  const tabs = [
-    { key: "ALL", label: "All" },
-    { key: "DRAFT", label: "Draft" },
-    { key: "AWAITING_PAYMENT", label: "Awaiting" },
-    { key: "DUE_SOON", label: "Due Soon" },
-    { key: "OVERDUE", label: "Overdue" },
-    { key: "PAID", label: "Paid" },
-    { key: "NEEDS_REVIEW", label: "Needs Review" },
-  ];
+  const tabs = useMemo(() => {
+    const list = [
+      { key: "ALL", label: "All" },
+      { key: "DRAFT", label: "Draft" },
+      { key: "AWAITING_PAYMENT", label: "Awaiting" },
+      { key: "DUE_SOON", label: "Due Soon" },
+      { key: "OVERDUE", label: "Overdue" },
+      { key: "PAID", label: hasDemoInvoices ? "PayPal Paid" : "Paid" },
+    ];
+    if (hasDemoInvoices) {
+      list.push({ key: "SIMULATED_PAID", label: "Simulated Paid" });
+    }
+    list.push({ key: "NEEDS_REVIEW", label: "Needs Review" });
+    return list;
+  }, [hasDemoInvoices]);
 
   // Update status filter in URL while preserving search query
   const handleTabClick = (tabKey: string) => {
@@ -196,6 +215,12 @@ export function InvoiceTable({
             if (!isOverdue) return false;
           } else if (filter === "AWAITING_PAYMENT") {
             if (inv.cashpilotStatus !== CashPilotStatus.AWAITING_PAYMENT) return false;
+          } else if (filter === "SIMULATED_PAID") {
+            if (inv.cashpilotStatus !== CashPilotStatus.PAID || !inv.isDemoData) return false;
+          } else if (filter === "PAID") {
+            if (inv.cashpilotStatus !== CashPilotStatus.PAID) return false;
+            // When demo data exists with simulated invoices, PayPal Paid shows real/verified provider paid
+            if (hasDemoInvoices && inv.isDemoData) return false;
           } else if (inv.cashpilotStatus !== filter) {
             return false;
           }
@@ -503,7 +528,7 @@ export function InvoiceTable({
 
                     {/* Status Badge */}
                     <td className="py-3.5 px-4 sm:px-6">
-                      <StatusBadge status={inv.cashpilotStatus} size="sm" />
+                      <StatusBadge status={inv.cashpilotStatus} isDemoData={inv.isDemoData} size="sm" />
                     </td>
 
                     {/* Provenance Badge */}

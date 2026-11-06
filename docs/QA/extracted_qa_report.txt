@@ -1,0 +1,471 @@
+
+CASHPILOT AI
+QA Findings & ProductImprovement Report
+Functional, workflow, integration and UI/UX issues
+Prepared for: CashPilot AI project teamBasis: Manual QA observations and supplied 9-page issue documentPurpose: Shared backlog for triage, ownership, implementation and verification
+
+1. Executive summary
+This report consolidates the issues observed during manual testing of CashPilot AI across Demo Workspace and User Workspace. It converts informal observations into a structured backlog that can be shared, assigned to contributors, implemented in controlled workstreams and verified through repeatable acceptance checks.
+The most consequential findings concern AI invoice drafting, persistence of invoice progress, PayPal Sandbox recipient/send behaviour, and a financial consistency defect in which tax calculated by CashPilot was not reflected in the PayPal-hosted invoice. Other findings concern cancellation recovery, invoice status/filtering, profile management, navigation and modal usability.
+1.1 Agreed product direction
+The invoice creation experience will use a PERSISTENT DRAFT WORKSPACE, not a temporary wizard. Each invoice has its own saved record and resumable state. Users can leave and return, move between stages, edit before sending and create another independent draft without losing existing work.
+1.2 Scope boundaries
+Bulk invoice creation is explicitly out of scope. The requirement is multiple individual saved drafts, not bulk generation.
+The supplied findings are manual observations. Root causes not established by evidence are marked for reproduction/verification.
+This is a requirements and triage report; it does not authorize implementation, database changes, commits or releases.
+Demo payment simulation must remain distinct from PayPal-verified payment.
+PayPal testing must use Sandbox only; no real-money transactions.
+2. Scope and classification | 
+Category | 
+Scope | 
+Included topics | 
+A. General functional/logical | 
+Both workspaces | 
+AI extraction, invoice lifecycle, persistence, PayPal integration, cancellation/recovery, tax, status/filtering. | 
+B. Demo Workspace | 
+Demo only | 
+Seed data, reset, simulated payment, demo-only access and safety boundaries. | 
+C. User Workspace | 
+User only | 
+Profile management, onboarding and user-specific PayPal/account behaviour. | 
+D. UI/UX | 
+Both unless specified | 
+Activity selection, modal sizing, dashboard navigation, duplicate icon, issue date and client navigation.
+
+The source document does not identify a new Demo-only defect explicitly. Demo-specific behaviours are included as regression-protection requirements because they have already been manually tested.
+3. Consolidated issue register | 
+ID | 
+Issue | 
+Category | 
+Priority | 
+Current status | 
+GEN-01 | 
+AI extraction does not reliably interpret complete prompts | 
+General | 
+Critical | 
+Reported; reproduce | 
+GEN-02 | 
+Invoice workflow loses state between stages | 
+General | 
+Critical | 
+Reported | 
+GEN-03 | 
+No save-and-resume workflow for individual drafts | 
+General | 
+High | 
+Reported | 
+GEN-04 | 
+Editing unavailable at approval/confirmation while still unsent | 
+General | 
+High | 
+Reported | 
+GEN-05 | 
+Starting another invoice requires unnecessary navigation | 
+General | 
+Medium | 
+Reported | 
+GEN-06 | 
+PayPal Sandbox behaviour differs by recipient email/account | 
+General | 
+Critical | 
+Observed; root cause unknown | 
+GEN-07 | 
+Cancelled invoice cannot be restored or safely recreated | 
+General | 
+High | 
+Reported; provider rules to verify | 
+GEN-08 | 
+CashPilot tax is missing from PayPal-hosted invoice | 
+General | 
+Critical | 
+Observed discrepancy | 
+GEN-09 | 
+Invoice list/filter does not correctly distinguish simulated-paid | 
+General | 
+High | 
+Reported | 
+DEMO-01 | 
+Protect simulation/reset/provenance behaviour during shared changes | 
+Demo regression | 
+High | 
+Previously manually checked | 
+USER-01 | 
+No profile page for authenticated user | 
+User | 
+Medium | 
+Reported | 
+USER-02 | 
+User Workspace PayPal recipient/account flow needs validation | 
+User | 
+Critical | 
+Related to GEN-06 | 
+UX-01 | 
+Activity row selection/highlighting is ambiguous | 
+UI/UX | 
+Medium | 
+Reported | 
+UX-02 | 
+Modals overflow viewport or cannot scroll | 
+UI/UX | 
+High | 
+Reported with screenshots | 
+UX-03 | 
+Dashboard cards route to Collections rather than filtered invoices | 
+UI/UX | 
+High | 
+Reported | 
+UX-04 | 
+New Client button shows duplicate plus icons | 
+UI/UX | 
+Low | 
+Reported | 
+UX-05 | 
+Invoice listing lacks Issue Date column | 
+UI/UX | 
+Low | 
+Reported | 
+UX-06 | 
+Client row should navigate to that client's filtered invoices | 
+UI/UX | 
+Medium | 
+Reported
+
+4. Detailed requirements — General issues
+GEN-01 — AI invoice extraction reliability
+Priority: Critical  |  Scope: Demo and User
+Observed behaviour: A prompt requested Website redesign (10 hours at USD 150/hour), UI revisions (5 hours at USD 80/hour), USD currency, payment due in 14 days and a professional thank-you note. The generated result did not correctly capture both line items. The Notes/Instructions area retained only a shortened fragment of the prompt, using an ellipsis.
+Expected behaviour: The AI should interpret the complete prompt, extract all explicitly stated invoice fields and line items, and present a reviewable draft. The complete original prompt must remain available. The AI must not silently omit or invent commercial details.
+Acceptance criteria:
+Both line items are present with exact descriptions, quantities, unit prices and calculated totals.
+Currency and payment terms are extracted correctly; due date is calculated from invoice date and requested term.
+Thank-you note is placed in the appropriate customer-facing note/message field.
+Complete original prompt remains inspectable after generation and navigation.
+Ambiguous or unsupported fields are surfaced for user review, not guessed.
+No invoice is sent automatically.
+Notes: Expected pre-tax subtotal for the example: 10 × $150 + 5 × $80 = $1,900. Source document page 1.
+GEN-02 — Persistent invoice workflow and state preservation
+Priority: Critical  |  Scope: Demo and User
+Observed behaviour: The Describe → Review → Approval → PayPal confirmation → Send workflow does not reliably preserve state. Returning from Review to Describe can lose the prompt; moving between approval/confirmation can restart the flow or return to an earlier stage.
+Expected behaviour: All stages must operate on one persistent invoice draft with a stable identifier. Navigation must not discard input or silently reset progress.
+Acceptance criteria:
+A stable invoice ID is assigned when the draft is first saved.
+Prompt, extracted fields, line items, client, dates, currency, tax, notes and edits persist.
+Back/forward navigation restores the same draft and latest saved state.
+Refresh/leave-and-return restores the draft.
+Incomplete drafts can be resumed from an identifiable draft list.
+Approval, provider creation and sending remain distinct lifecycle events.
+Notes: Product direction selected: persistent draft workspace, not a temporary wizard. Source page 2.
+GEN-03 — Save, pause and resume individual drafts
+Priority: High  |  Scope: Demo and User
+Observed behaviour: There is no clear way to save a partially completed invoice and return later. Users may want to enter prompts for multiple separate invoices and complete them later.
+Expected behaviour: Users can save an individual incomplete invoice, leave and resume it later. Multiple independent drafts are supported.
+Acceptance criteria:
+Save Draft is available where a draft can be persisted; autosave may supplement it.
+Saved drafts appear in the invoice/draft listing with Draft status.
+Reopening restores prompt, extracted data and edits.
+Multiple drafts coexist without overwriting one another.
+Unsaved-change handling prevents accidental loss.
+Bulk invoice generation is not introduced.
+Notes: Bulk invoice creation is explicitly not requested. Source page 2.
+GEN-04 — Editing before final send
+Priority: High  |  Scope: Demo and User
+Observed behaviour: At approval/confirmation stages, the user reports no clear option to return to editing even though the invoice has not been sent.
+Expected behaviour: Any unsent invoice remains editable. Material edits after approval invalidate the previous approval and require reapproval.
+Acceptance criteria:
+Edit action is available from review and pre-send confirmation.
+Editing returns to the same draft ID.
+Material edits invalidate previous approval.
+Approval/hash at send time matches exact current content.
+After provider send, edits use a distinct provider update/cancel/reissue workflow.
+Notes: Source page 2.
+GEN-05 — Start another invoice without losing current work
+Priority: Medium  |  Scope: Demo and User
+Observed behaviour: Starting another invoice from an in-progress flow requires extra navigation or a separate create-another action.
+Expected behaviour: New Invoice starts a new independent draft while preserving the current draft.
+Acceptance criteria:
+New Invoice opens a new draft with a new ID.
+Current draft is saved or unsaved changes trigger a warning.
+New draft does not overwrite or unintentionally inherit previous data.
+Users can switch between saved drafts.
+Notes: Source page 2.
+GEN-06 — PayPal Sandbox recipient/account behaviour
+Priority: Critical  |  Scope: Both; verify User Workspace separately
+Observed behaviour: Sending and reminders reportedly worked for qa.client.one@example.com, while sending failed for sb-agk6m53482767@personal.example.com, preventing downstream tests. The cause has not been established.
+Expected behaviour: Merchant/business authentication and invoice recipient/buyer identity must be clearly separated. Recipient data must be submitted correctly; provider failures must be accurately surfaced. No hardcoded email workaround or false success.
+Acceptance criteria:
+Run a controlled matrix recording recipient type, country, currency, merchant Sandbox account and provider response.
+CashPilot recipient email matches the email submitted to PayPal.
+Business Sandbox app credentials authenticate API calls; eligible personal Sandbox buyer account is used for buyer-side payment tests.
+Provider error and correlation/debug ID are surfaced where available.
+Failed calls do not mark invoice sent or create success activity.
+Test in Demo and User workspaces with isolation preserved.
+Notes: Cause is unconfirmed. Source page 2 requests beginner-friendly documentation of normal email vs Sandbox account and the end-to-end freelancer/client flow.
+GEN-07 — Cancelled invoice recovery
+Priority: High  |  Scope: Both
+Observed behaviour: After Cancel Invoice, the user cannot restore/reactivate an invoice or recover from accidental cancellation.
+Expected behaviour: Provide a safe recovery path and distinguish local draft cancellation from provider-confirmed cancellation. Do not assume a provider-cancelled invoice can be reactivated.
+Acceptance criteria:
+Confirmation precedes provider cancellation.
+UI records provider outcome and activity.
+Local draft cancellation is distinguished from provider cancellation.
+If reactivation is unsupported, offer a replacement invoice linked to the cancelled one.
+Replacement gets a new provider ID and fresh approval.
+Never locally mark a provider-cancelled invoice active without provider evidence.
+Notes: Verify PayPal-supported status transitions before selecting the UX. Source page 2.
+GEN-08 — Tax and total consistency between CashPilot and PayPal
+Priority: Critical  |  Scope: Both
+Observed behaviour: CashPilot showed $1,522.50 (subtotal $1,450 plus 5% tax of $72.50), while the PayPal merchant/hosted invoice showed $1,450 and no tax.
+Expected behaviour: The same financial breakdown and amount due must appear in CashPilot, PayPal merchant view and hosted payer view. Sending must be blocked if totals cannot be reconciled.
+Acceptance criteria:
+Tax fields are included in the provider payload using supported fields.
+Provider response is reconciled against CashPilot subtotal, tax and grand total.
+Mismatched totals block sending or trigger a clear needs-review state.
+Hosted payer amount equals CashPilot amount due.
+Regression tests cover zero and non-zero tax.
+Currency precision and rounding are consistent.
+Notes: Critical financial correctness issue. Do not pay the mismatched invoice. Source pages 3–4.
+GEN-09 — Simulated-paid filtering and status semantics
+Priority: High  |  Scope: Both; primarily invoice list
+Observed behaviour: Invoice page reportedly lacks filtering that correctly accounts for simulated-paid invoices; simulation was added after original filters.
+Expected behaviour: Provider-verified paid and Demo-only simulated-paid must be distinct states/provenance in labels, filters, metrics and reporting.
+Acceptance criteria:
+Demo users can clearly identify/filter simulated-paid invoices.
+Provider Paid and Simulated Paid are distinct.
+Simulated payments are excluded from real revenue and open receivables.
+User Workspace cannot create/access simulated-paid state.
+Counts and filters use consistent definitions.
+Notes: Source page 4.
+5. Workspace-specific requirements
+5.1 Demo Workspace — regression protection
+No additional Demo-only defect was explicitly listed in the supplied report. Preserve the following already-tested behaviours while changing shared functionality:
+Simulation remains restricted to eligible Demo Workspace invoices.
+Simulation is labelled 'no real money moved' and never represented as PayPal PAID.
+Demo reset restores canonical local data but does not imply external PayPal invoices were deleted/cancelled.
+Reminder-test seed records must not use fabricated provider IDs as if genuine.
+Previously tested real Sandbox reminder flow (provider response, audit event, approval consumption and cooldown) remains functional.
+Demo and User Workspace clients, invoices and activity remain isolated.
+5.2 User Workspace
+USER-01 — User profile management
+Priority: Medium  |  Scope: User Workspace
+Observed behaviour: There is no dedicated profile page for the authenticated user to view/manage personal account details.
+Expected behaviour: Provide a profile area for the signed-in individual, separate from business/workspace settings.
+Acceptance criteria:
+User can view/edit supported personal profile fields.
+Changes persist after refresh and re-login.
+Sensitive authentication data is not exposed.
+Personal details are distinct from business/workspace details.
+Only the authenticated account owner can access the profile.
+Notes: Exact profile fields are not specified in the source; define them before implementation.
+USER-02 — User Workspace PayPal flow verification
+Priority: Critical  |  Scope: User Workspace
+Observed behaviour: The recipient-specific Sandbox issue prevented testing reminder/payment behaviour in User Workspace.
+Expected behaviour: Repeat the controlled GEN-06 recipient tests in an independently registered User Workspace.
+Acceptance criteria:
+Invoice is created/approved by authenticated workspace user.
+Send success is based on actual provider response.
+Payer link opens matching Sandbox invoice.
+Provider status sync is accurate.
+Demo reset/simulation unavailable; simulation endpoint denied.
+No real-money payment during QA.
+Notes: This is a validation workstream, not a separately diagnosed root cause.
+6. UI/UX requirements
+UX-01 — Activity row selection and highlighting
+Priority: Medium  |  Scope: Both
+Observed behaviour: Selecting one Activity row also highlights other rows associated with the same invoice, making the selected row unclear.
+Expected behaviour: Selection, hover and keyboard focus states must be distinct. Related events may be grouped without appearing selected.
+Acceptance criteria:
+Only selected row has selected-state styling.
+Hover/focus/selected states are visually distinct.
+Related events have a separate grouping cue.
+Keyboard navigation remains understandable.
+UX-02 — Modal sizing, overflow and scrolling
+Priority: High  |  Scope: Both
+Observed behaviour: Reminder, reset, send-invoice and refresh dialogs appear partly outside the viewport or cannot be fully read because scrolling is unavailable or occurs in the wrong container.
+Expected behaviour: Dialogs must fit within the viewport and internally scroll when content is long; key actions remain reachable.
+Acceptance criteria:
+Dialog dimensions adapt to desktop/mobile and short viewport heights.
+Long content scrolls inside modal.
+Primary/secondary actions remain reachable.
+Focus is trapped and restored appropriately.
+Close/Escape behaviour is consistent with destructive-action safety.
+No warning, approval hash, content or button is clipped.
+Notes: Source pages 5–6 include examples of Reminder, Reset Demo, Send Invoice and Refresh modals.
+UX-03 — Dashboard card navigation
+Priority: High  |  Scope: Both
+Observed behaviour: Dashboard cards link to filtered Collections URLs such as /collections?stage=overdue; expected destination is filtered invoice listing.
+Expected behaviour: Dashboard KPI links open invoice listing with the relevant filter visibly applied.
+Acceptance criteria:
+Applicable cards open the invoice listing with corresponding filter.
+Active filter is visible.
+Displayed results/counts agree with card definition.
+Browser back returns to dashboard.
+UX-04 — Duplicate plus icon on New Client action
+Priority: Low  |  Scope: Invoice review/client quick-add
+Observed behaviour: New Client button on draft review displays two plus icons.
+Expected behaviour: Display one icon and one clear text label.
+Acceptance criteria:
+Only one plus icon appears at supported breakpoints.
+Shared button rendering does not duplicate icon.
+UX-05 — Issue Date column in invoice list
+Priority: Low  |  Scope: Invoice listing
+Observed behaviour: Invoice page does not display the issue date as a column.
+Expected behaviour: Add Issue Date, distinct from Due Date.
+Acceptance criteria:
+Issue date is shown where available.
+Date formatting is consistent.
+Missing dates are not replaced with misleading defaults.
+Sorting behaviour is defined if table sorting exists.
+UX-06 — Client row navigation to filtered invoices
+Priority: Medium  |  Scope: Clients page
+Observed behaviour: Client row selection opens a client detail/modal experience; requested behaviour is to navigate to invoices filtered for that client.
+Expected behaviour: Provide a clear path from a client row to that client's invoice listing. Keep client details as a separate action if still useful.
+Acceptance criteria:
+Selected client filter is applied and visible.
+Only invoices for that client and workspace appear.
+Filter can be cleared.
+Row click/action is unambiguous.
+Notes: Source page 7.
+7. Persistent Draft Workspace — agreed product specification
+This is the selected direction for the invoice drafting experience and should guide GEN-01 through GEN-05.
+7.1 Core model
+Each invoice is a persistent draft entity with a stable ID from first save.
+Describe, Review, Approval and pre-send Confirmation are stages/views of the same invoice draft.
+Store the original prompt, extracted data, line items, recipient/client, currency, dates, tax, notes, edits, approval state and relevant workflow metadata.
+Users can create multiple independent drafts, switch between them and resume any draft.
+Bulk invoice generation is out of scope.
+7.2 Lifecycle behaviour | 
+Stage | 
+Expected behaviour | 
+Control / rule | 
+Describe | 
+Enter natural-language request and create/save draft. | 
+Preserve complete original prompt. | 
+Review | 
+Inspect and edit extracted fields and line items. | 
+AI output is a proposal; user controls final content. | 
+Save / pause | 
+Persist incomplete work and leave. | 
+Draft must be resumable after navigation/refresh. | 
+Approval | 
+User approves exact invoice content. | 
+Approval binds to reviewed material content. | 
+Pre-send confirmation | 
+Show recipient, currency, items, tax, total and provider destination. | 
+Return-to-edit is available; material edit invalidates approval. | 
+Send | 
+Submit approved invoice to PayPal Sandbox. | 
+Only provider-confirmed success is recorded as sent. | 
+After send | 
+Show provider ID, status and payer link. | 
+Use provider lifecycle actions; not an ordinary local draft.
+
+7.3 State and approval rules
+Autosave may be used, but clear saving/saved/error feedback is required.
+If autosave is not implemented, provide explicit Save Draft and unsaved-change protection.
+Stage navigation must not create duplicate invoices or lose edits.
+Material edits after approval invalidate that approval and require reapproval.
+Approval snapshot/hash must match the exact payload sent to PayPal.
+Failed send leaves a recoverable unsent invoice and never claims success.
+Starting a new draft must not replace the one currently being edited.
+7.4 Minimum acceptance scenario
+Create a draft from a prompt requesting at least two line items.
+Verify extracted fields and preserve original prompt.
+Edit a line item and save.
+Navigate back to Describe and forward to Review; confirm prompt and edits remain.
+Leave/refresh and reopen the draft.
+Create a second draft and confirm the first remains unchanged.
+Approve first draft, edit a material field and confirm approval is invalidated.
+Reapprove and proceed to pre-send confirmation.
+Return to edit and confirm same draft is restored.
+Send only after explicit confirmation and verify provider evidence.
+8. PayPal Sandbox operating model and QA guidance
+The source report requests a beginner-friendly explanation of normal email versus Sandbox account usage and the freelancer-to-client payment journey. The following is a conceptual model for team alignment; exact recipient eligibility and the reported failure must be verified against the configured Sandbox environment. | 
+Role | 
+Purpose | 
+Responsibility | 
+Freelancer / merchant | 
+Owns the business receiving payment. | 
+Uses PayPal Sandbox business account/application credentials for API authentication. | 
+CashPilot | 
+Invoice workflow application. | 
+Stores recipient details, submits invoice, records provider ID/status and displays payer link. | 
+Client / payer | 
+Receives and pays invoice in a test scenario. | 
+Uses the invoice recipient email; for Sandbox buyer/payment tests, signs in using an eligible Sandbox personal buyer account.
+
+8.1 End-to-end conceptual flow
+Freelancer creates a CashPilot account and enters business/workspace details.
+Merchant configures the PayPal Sandbox business application credentials used by the integration.
+Freelancer creates a client record with recipient email and invoice details.
+Freelancer drafts, reviews and explicitly approves the invoice.
+CashPilot submits invoice to PayPal Sandbox and stores provider ID only after successful provider operations.
+Client is informed through PayPal invoice delivery and/or hosted payer link, depending on send configuration.
+For payment testing, client opens hosted invoice and uses an eligible Sandbox personal buyer account.
+CashPilot retrieves provider status/evidence and marks invoice PayPal-verified paid only when provider confirms it.
+A normal email address can be stored as invoice recipient data, but this alone does not create a Sandbox buyer account or guarantee that the recipient can log in and complete a Sandbox payment. The exact recipient rules and failure for the personal Sandbox email remain unconfirmed. For this QA cycle, do not make real-money payments.
+9. Suggested implementation sequence | 
+Workstream | 
+IDs | 
+Rationale / dependency | 
+A. Invoice drafting foundation | 
+GEN-01–GEN-05 | 
+Persistent draft model and workflow should be designed before individual drafting screens are polished. | 
+B. Financial/provider correctness | 
+GEN-06, GEN-08, GEN-07, USER-02 | 
+Recipient/send correctness and amount consistency are blockers to trustworthy invoice delivery. | 
+C. Status and navigation consistency | 
+GEN-09, UX-03, UX-05, UX-06, UX-01 | 
+Align listing semantics/navigation after invoice state definitions are stable. | 
+D. User account completeness | 
+USER-01 | 
+Profile can be scoped independently of invoice engine work. | 
+E. UI responsiveness and polish | 
+UX-02, UX-04 | 
+Modal fix has broad usability impact; duplicate icon is isolated. | 
+F. Regression protection | 
+DEMO-01 and cross-workspace tests | 
+Re-run after shared changes to preserve demo and security boundaries.
+
+Priorities are proposed triage levels based on financial impact, workflow blocking and scope. The team should confirm priority, ownership and delivery order during planning.
+10. QA evidence and known status
+10.1 Observations in supplied issue document
+AI extraction failed to capture the complete two-line-item prompt; notes appeared truncated (source page 1).
+Draft workflow did not preserve state between stages and lacked save/resume (page 2).
+qa.client.one@example.com reportedly worked for send/reminder; personal Sandbox email reportedly failed at send (page 2).
+CashPilot showed $1,522.50 including 5% tax; PayPal showed $1,450 without tax (pages 3–4).
+Invoice filters did not adequately account for simulated-paid status; Activity highlighting was ambiguous (page 4).
+No user profile page; multiple modals overflowed or could not be fully read/scrolled (pages 5–6).
+Dashboard cards routed to Collections filters; duplicate plus icon; missing issue date; client navigation request (page 7).
+10.2 Prior manual QA context supplied separately
+Demo payment simulation and cross-surface display were reported as passing; simulated state remained distinct from provider status.
+Demo Workspace reset was reported as passing.
+A genuine PayPal Sandbox reminder was reported successful with provider HTTP 204; CashPilot recorded the operation and cooldown.
+The tax discrepancy remains an outstanding critical financial consistency issue.
+These checks are recorded as project context supplied separately; they are not independent re-verification by the author of this report.
+11. Ownership, status and change control | 
+Field | 
+Team usage | 
+Issue owner | 
+Assign one accountable owner per issue/workstream. | 
+Implementer | 
+Person responsible for code/configuration change. | 
+Reviewer | 
+Team member reviewing implementation and diff. | 
+QA owner | 
+Person executing acceptance checks. | 
+Status | 
+Not started / In progress / Ready for review / QA passed / Blocked / Deferred. | 
+Evidence | 
+Screenshots, test output, provider response/correlation ID and commit reference.
+
+Recommended practice: create one task per coherent issue or dependency group. Avoid combining unrelated UI polish with financial/provider logic. Every change should include acceptance tests and a manual QA plan. Review the diff and test evidence before committing; do not push or merge without explicit team approval.
+12. Open questions for team decisions
+Which personal profile fields should be editable, and which business/workspace fields belong in settings?
+Should draft autosave be continuous, explicit or hybrid? What save/error feedback is required?
+Which invoice statuses should appear in filters, including Draft, Sent, Due Soon, Overdue, Cancelled, PayPal Verified Paid and Simulated Paid?
+Should client-row click navigate directly to invoices, or should a separate View Invoices action preserve client details?
+What is the desired recovery UX after PayPal confirms cancellation if reactivation is unsupported?
+Which currencies, tax types and rounding rules are in scope for the first reliable integration release?
+Which recipient-email/Sandbox buyer scenarios are supported by the current PayPal Sandbox setup?
+Appendix A — Source and interpretation
+Primary source: user-supplied 'Cashpilot AI problem.docx' (9 pages). Issue statements and screenshot observations are based on that document, with page references noted above. Acceptance criteria and product requirements formalize the reported problems. Where the source does not establish a root cause or provider capability, this report leaves it for verification rather than presenting an assumption as fact.

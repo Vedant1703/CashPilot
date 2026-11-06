@@ -561,7 +561,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
             <h1 className="font-headline font-bold text-2xl sm:text-3xl text-[#12263F]">
               {invoice.number ?? "Invoice"}
             </h1>
-            <StatusBadge status={invoice.cashpilotStatus} />
+            <StatusBadge status={invoice.cashpilotStatus} isDemoData={invoice.isDemoData} />
             <span
               className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium border ${provenance.badgeClass}`}
             >
