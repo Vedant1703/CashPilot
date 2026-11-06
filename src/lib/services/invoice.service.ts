@@ -22,6 +22,7 @@ import {
   invoiceInputSchema,
   type InvoiceInput,
   type ApprovalPayload,
+  type SupportedCurrency,
 } from "@/lib/validations/invoice";
 import {
   createPayPalDraftInvoice,
@@ -433,6 +434,321 @@ export async function createInvoice(
         })),
       },
       materialPayloadHash,
+    },
+  };
+}
+
+/**
+ * Update an existing draft invoice with deterministic totals and approval invalidation.
+ *
+ * SRS §4, §7 & QA GEN-02, GEN-03, GEN-04:
+ * - Operates on an existing persistent draft with a stable ID
+ * - Any material edit invalidates prior approvals (APPROVAL_INVALIDATED)
+ * - If a PayPal draft was already created, modifying material content clears the linked PayPal draft
+ * - Totals are computed server-side deterministically
+ * - Records INVOICE_UPDATED in audit trail
+ */
+export async function updateInvoiceDraft(
+  workspaceId: string,
+  actorId: string,
+  invoiceId: string,
+  input: Partial<InvoiceInput>
+): Promise<
+  ServiceResult<{
+    invoiceId: string;
+    invoice: NonNullable<Awaited<ReturnType<typeof getInvoice>>["data"]>["invoice"];
+    materialPayloadHash: string;
+    approvalsInvalidated: number;
+  }>
+> {
+  // 1. Fetch existing invoice
+  const existing = await getInvoiceById(invoiceId, workspaceId);
+  if (!existing) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  // 2. Status guard: only DRAFT invoices may be edited (GEN-03)
+  if (existing.cashpilotStatus !== CashPilotStatus.DRAFT) {
+    return {
+      ok: false,
+      error: `Only DRAFT invoices can be updated (current status: ${existing.cashpilotStatus})`,
+      code: "INVALID_INVOICE_STATUS",
+    };
+  }
+
+  // 3. Merge input with existing values to allow partial updates
+  const invoiceDateStr = existing.invoiceDate
+    ? existing.invoiceDate instanceof Date
+      ? existing.invoiceDate.toISOString().substring(0, 10)
+      : String(existing.invoiceDate).substring(0, 10)
+    : undefined;
+
+  const dueDateStr = existing.dueDate
+    ? existing.dueDate instanceof Date
+      ? existing.dueDate.toISOString().substring(0, 10)
+      : String(existing.dueDate).substring(0, 10)
+    : new Date().toISOString().substring(0, 10);
+
+  const mergedInput = {
+    clientId: input.clientId ?? existing.clientId,
+    title: input.title !== undefined ? input.title : existing.title,
+    notes: input.notes !== undefined ? input.notes : existing.notes || undefined,
+    terms: input.terms !== undefined ? input.terms : existing.terms || undefined,
+    currency: (input.currency ?? existing.currency) as SupportedCurrency,
+    taxRateBasisPoints: input.taxRateBasisPoints ?? existing.taxRateBasisPoints,
+    invoiceDate: input.invoiceDate ?? invoiceDateStr,
+    dueDate: input.dueDate ?? dueDateStr,
+    lineItems:
+      input.lineItems ??
+      existing.lineItems.map((li) => ({
+        description: li.description,
+        quantity: li.quantity,
+        unitPriceMinorUnits: li.unitPriceMinorUnits,
+      })),
+    subtotalMinorUnits: input.subtotalMinorUnits,
+    totalMinorUnits: input.totalMinorUnits,
+  };
+
+  // 4. Validate merged fields against schema
+  const parsed = invoiceInputSchema.safeParse(mergedInput);
+  if (!parsed.success) {
+    return {
+      ok: false,
+      error: parsed.error.issues.map((i) => i.message).join("; "),
+      code: "VALIDATION_ERROR",
+    };
+  }
+
+  const data = parsed.data;
+
+  // 4. Verify client belongs to this workspace
+  const client = await db.client.findFirst({
+    where: { id: data.clientId, workspaceId },
+  });
+  if (!client) {
+    return { ok: false, error: "Client not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  // 5. Compute totals deterministically
+  const lineItemCalcs = data.lineItems.map((li) => ({
+    quantity: li.quantity,
+    unitPriceMinorUnits: li.unitPriceMinorUnits,
+  }));
+
+  let totals: ReturnType<typeof computeInvoiceTotals>;
+  try {
+    totals = computeInvoiceTotals(lineItemCalcs, data.taxRateBasisPoints);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Financial calculation error: ${err instanceof Error ? err.message : String(err)}`,
+      code: "CALCULATION_ERROR",
+    };
+  }
+
+  // 5b. Verify client-supplied totals if provided
+  if (
+    input.totalMinorUnits !== undefined &&
+    input.totalMinorUnits !== totals.totalMinorUnits
+  ) {
+    return {
+      ok: false,
+      error: `Client-supplied total (${input.totalMinorUnits}) does not match server-calculated total (${totals.totalMinorUnits})`,
+      code: "TOTAL_MISMATCH",
+    };
+  }
+
+  if (
+    input.subtotalMinorUnits !== undefined &&
+    input.subtotalMinorUnits !== totals.subtotalMinorUnits
+  ) {
+    return {
+      ok: false,
+      error: `Client-supplied subtotal (${input.subtotalMinorUnits}) does not match server-calculated subtotal (${totals.subtotalMinorUnits})`,
+      code: "SUBTOTAL_MISMATCH",
+    };
+  }
+
+  // 6. Invalidate any pending or active approvals (GEN-04)
+  const activeApprovals = await db.approval.findMany({
+    where: {
+      invoiceId,
+      workspaceId,
+      status: { in: [ApprovalStatus.PENDING, ApprovalStatus.APPROVED] },
+    },
+  });
+
+  // 7. Execute update transaction
+  const updatedInvoice = await db.$transaction(async (tx) => {
+    // Invalidate approvals
+    if (activeApprovals.length > 0) {
+      await tx.approval.updateMany({
+        where: {
+          id: { in: activeApprovals.map((a) => a.id) },
+        },
+        data: {
+          status: ApprovalStatus.INVALIDATED,
+          invalidatedAt: new Date(),
+          invalidationReason: "Invoice material fields changed after approval",
+        },
+      });
+
+      for (const a of activeApprovals) {
+        await tx.activityEvent.create({
+          data: {
+            workspaceId,
+            invoiceId,
+            approvalId: a.id,
+            eventType: ActivityEventType.APPROVAL_INVALIDATED,
+            actorType: ActorType.USER,
+            actorId,
+            description: "Approval invalidated: invoice draft was edited after approval",
+            metadata: { previousPayloadHash: a.payloadHash },
+          },
+        });
+      }
+    }
+
+    // Replace line items
+    await tx.invoiceLineItem.deleteMany({
+      where: { invoiceId },
+    });
+
+    const updated = await tx.invoice.update({
+      where: { id: invoiceId },
+      data: {
+        clientId: data.clientId,
+        currency: data.currency,
+        title: data.title,
+        notes: data.notes,
+        terms: data.terms,
+        taxRateBasisPoints: data.taxRateBasisPoints,
+        subtotalMinorUnits: totals.subtotalMinorUnits,
+        taxMinorUnits: totals.taxMinorUnits,
+        totalMinorUnits: totals.totalMinorUnits,
+        invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : existing.invoiceDate,
+        dueDate: new Date(data.dueDate + "T00:00:00Z"),
+        paypalInvoiceId: null,
+        paypalStatus: null,
+        paypalStatusRaw: Prisma.DbNull,
+        isDemoData: client.isDemo,
+        updatedAt: new Date(),
+      },
+      include: {
+        client: true,
+      },
+    });
+
+    if (existing.paypalInvoiceId) {
+      await tx.activityEvent.create({
+        data: {
+          workspaceId,
+          invoiceId,
+          eventType: ActivityEventType.INVOICE_UPDATED,
+          actorType: ActorType.USER,
+          actorId,
+          description: `Un-sent PayPal Sandbox draft ${existing.paypalInvoiceId} cleared due to invoice modifications`,
+          metadata: { clearedPaypalInvoiceId: existing.paypalInvoiceId },
+        },
+      });
+    }
+
+    const createdLineItems = await Promise.all(
+      data.lineItems.map((li, idx) =>
+        tx.invoiceLineItem.create({
+          data: {
+            invoiceId,
+            description: li.description,
+            quantity: li.quantity,
+            unitPriceMinorUnits: li.unitPriceMinorUnits,
+            totalMinorUnits: totals.lineItemTotals[idx],
+            sortOrder: idx,
+          },
+        })
+      )
+    );
+
+    const updatedActivity = await tx.activityEvent.create({
+      data: {
+        workspaceId,
+        invoiceId,
+        eventType: ActivityEventType.INVOICE_UPDATED,
+        actorType: ActorType.USER,
+        actorId,
+        description: `Draft invoice updated with total ${totals.totalMinorUnits} ${data.currency} minor units`,
+        metadata: {
+          totalMinorUnits: totals.totalMinorUnits,
+          currency: data.currency,
+          approvalsInvalidated: activeApprovals.length,
+        },
+      },
+    });
+
+    return {
+      ...updated,
+      lineItems: createdLineItems,
+      activities: [updatedActivity],
+    };
+  });
+
+  const materialPayloadHash = computeMaterialPayloadHash(updatedInvoice);
+
+  return {
+    ok: true,
+    data: {
+      invoiceId: updatedInvoice.id,
+      invoice: {
+        id: updatedInvoice.id,
+        workspaceId: updatedInvoice.workspaceId,
+        clientId: updatedInvoice.clientId,
+        number: updatedInvoice.number,
+        title: updatedInvoice.title,
+        notes: updatedInvoice.notes,
+        terms: updatedInvoice.terms,
+        currency: updatedInvoice.currency,
+        subtotalMinorUnits: updatedInvoice.subtotalMinorUnits,
+        taxRateBasisPoints: updatedInvoice.taxRateBasisPoints,
+        taxMinorUnits: updatedInvoice.taxMinorUnits,
+        totalMinorUnits: updatedInvoice.totalMinorUnits,
+        invoiceDate: updatedInvoice.invoiceDate,
+        dueDate: updatedInvoice.dueDate,
+        cashpilotStatus: updatedInvoice.cashpilotStatus,
+        paypalInvoiceId: updatedInvoice.paypalInvoiceId,
+        paypalStatus: updatedInvoice.paypalStatus,
+        lastSyncAt: updatedInvoice.lastSyncAt,
+        syncIsStale: updatedInvoice.syncIsStale,
+        isDemoData: updatedInvoice.isDemoData,
+        aiDraftId: updatedInvoice.aiDraftId,
+        createdAt: updatedInvoice.createdAt,
+        updatedAt: updatedInvoice.updatedAt,
+        client: {
+          id: updatedInvoice.client.id,
+          name: updatedInvoice.client.name,
+          email: updatedInvoice.client.email,
+          company: updatedInvoice.client.company,
+          phone: updatedInvoice.client.phone,
+          isDemo: updatedInvoice.client.isDemo,
+        },
+        lineItems: updatedInvoice.lineItems.map((li) => ({
+          id: li.id,
+          description: li.description,
+          quantity: li.quantity,
+          unitPriceMinorUnits: li.unitPriceMinorUnits,
+          totalMinorUnits: li.totalMinorUnits,
+          sortOrder: li.sortOrder,
+        })),
+        activities: updatedInvoice.activities.map((a) => ({
+          id: a.id,
+          eventType: a.eventType,
+          actorType: a.actorType,
+          actorId: a.actorId,
+          description: a.description,
+          metadata: a.metadata as Record<string, unknown> | null,
+          createdAt: a.createdAt,
+        })),
+      },
+      materialPayloadHash,
+      approvalsInvalidated: activeApprovals.length,
     },
   };
 }

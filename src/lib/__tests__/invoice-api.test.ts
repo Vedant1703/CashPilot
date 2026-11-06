@@ -170,7 +170,7 @@ describe("Invoice Draft and Review APIs", () => {
       title: "Tampered Invoice",
       currency: "USD",
       taxRateBasisPoints: 0,
-      dueDate: "2026-11-01",
+      dueDate: "2026-12-01",
       totalMinorUnits: 9999, // FORGED total: $99.99 instead of $150.00
       lineItems: [
         {
@@ -199,7 +199,7 @@ describe("Invoice Draft and Review APIs", () => {
       title: "Tampered Subtotal",
       currency: "USD",
       taxRateBasisPoints: 0,
-      dueDate: "2026-11-01",
+      dueDate: "2026-12-01",
       subtotalMinorUnits: 5555, // FORGED subtotal
       lineItems: [
         {
@@ -347,7 +347,7 @@ describe("Invoice Draft and Review APIs", () => {
       clientId: "nonexistent-client-id",
       currency: "USD",
       taxRateBasisPoints: 0,
-      dueDate: "2026-11-01",
+      dueDate: "2026-12-01",
       lineItems: [
         {
           description: "Valid item",

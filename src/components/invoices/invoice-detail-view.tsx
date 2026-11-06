@@ -26,6 +26,7 @@ import {
   Clock,
   Info,
   ArrowRight,
+  Edit3,
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
@@ -505,6 +506,18 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          {/* Edit / Resume Draft in Invoice Studio (Only if DRAFT) */}
+          {invoice.cashpilotStatus === CashPilotStatus.DRAFT && (
+            <Link
+              href={`/invoices/new?draftId=${invoice.id}`}
+              aria-label="Edit and resume draft in Invoice Studio"
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl border border-[#CDC4FF] bg-[#F0EEFF] hover:bg-[#E2DCFF] text-[#5B3FD0] text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#5B3FD0] focus-visible:outline-hidden"
+            >
+              <Edit3 className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Edit in Studio</span>
+            </Link>
+          )}
+
           {/* Send Invoice Action Button (Only if eligible: DRAFT status & PayPal draft exists) */}
           {canSend && (
             <button

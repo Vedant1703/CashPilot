@@ -10,6 +10,8 @@ import {
   ArrowLeft,
   FileCheck,
   Sparkles,
+  Bookmark,
+  CheckCircle2,
 } from "lucide-react";
 import { PersistedStudioInvoice } from "./types";
 import { ClientFormModal, type ClientItem } from "@/components/clients/client-form-modal";
@@ -40,8 +42,10 @@ interface ReviewStepProps {
   missingFields: string[];
   extractionSource?: "ai_model" | "deterministic_rule_based";
   modelName?: string;
+  persistedInvoiceId?: string | null;
   onBack: () => void;
   onDraftSaved: (persistedInvoice: PersistedStudioInvoice, materialPayloadHash: string) => void;
+  onSaveOnly?: (persistedInvoice: PersistedStudioInvoice, materialPayloadHash: string) => void;
   onClientCreated?: (newClient: { id: string; name: string; email: string; company?: string | null }) => void;
 }
 
@@ -51,8 +55,10 @@ export function ReviewStep({
   missingFields = [],
   extractionSource = "deterministic_rule_based",
   modelName,
+  persistedInvoiceId,
   onBack,
   onDraftSaved,
+  onSaveOnly,
   onClientCreated,
 }: ReviewStepProps) {
   // Quick-add client state
@@ -115,6 +121,8 @@ export function ReviewStep({
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [currentInvoiceId, setCurrentInvoiceId] = useState<string | null>(persistedInvoiceId || null);
+  const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   // Update client selection
   const handleClientChange = (newClientId: string) => {
@@ -182,10 +190,11 @@ export function ReviewStep({
     return computeInvoiceTotals(minorUnitItems, taxBasisPoints);
   }, [lineItems, taxRatePercent]);
 
-  // Handle Save Draft & Proceed
-  const handleSaveDraft = async () => {
+  // Handle Save Draft & Proceed (or Save & Pause)
+  const handleSaveDraft = async (proceedToApproval = true) => {
     setIsSaving(true);
     setSaveError(null);
+    setSavedNotice(null);
 
     // Validate client & email
     if (!clientId) {
@@ -243,15 +252,25 @@ export function ReviewStep({
         })),
       };
 
-      const res = await fetch("/api/invoices/draft", {
-        method: "POST",
+      const url = currentInvoiceId ? `/api/invoices/${currentInvoiceId}` : "/api/invoices/draft";
+      const method = currentInvoiceId ? "PATCH" : "POST";
+
+      const res = await fetch(url, {
+        method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       const json = await res.json();
       if (res.ok && json.success) {
-        onDraftSaved(json.data, json.data.materialPayloadHash);
+        setCurrentInvoiceId(json.data.id);
+        if (proceedToApproval) {
+          onDraftSaved(json.data, json.data.materialPayloadHash);
+        } else {
+          setSavedNotice("Draft saved successfully · You can safely leave and resume anytime.");
+          onSaveOnly?.(json.data, json.data.materialPayloadHash);
+          setTimeout(() => setSavedNotice(null), 4000);
+        }
       } else {
         setSaveError(json.error || "Failed to persist draft invoice.");
       }
@@ -547,11 +566,29 @@ export function ReviewStep({
             />
           </div>
 
-          {/* Form Submit Action */}
-          <div className="pt-4 border-t border-[#EEF2F6] flex justify-end">
+          {/* Saved Notification */}
+          {savedNotice && (
+            <div className="p-3 rounded-xl bg-[#E8F5F1] border border-[#BCE3D6] text-[#0C7C61] text-xs flex items-center gap-2 animate-in fade-in">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span className="font-medium">{savedNotice}</span>
+            </div>
+          )}
+
+          {/* Form Submit Actions */}
+          <div className="pt-4 border-t border-[#EEF2F6] flex flex-col sm:flex-row items-center justify-between gap-3">
             <button
               type="button"
-              onClick={handleSaveDraft}
+              onClick={() => handleSaveDraft(false)}
+              disabled={isSaving}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-[#E3E8EF] text-xs font-semibold text-[#12263F] hover:bg-[#F6F5F1] transition-colors touch-target"
+            >
+              <Bookmark className="w-3.5 h-3.5 text-[#5E718D]" />
+              <span>Save & Pause</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSaveDraft(true)}
               disabled={isSaving}
               className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-[#0C7C61] hover:bg-[#096851] text-white text-xs font-semibold shadow-xs transition-colors touch-target focus-visible:ring-2 focus-visible:ring-[#0C7C61]"
             >

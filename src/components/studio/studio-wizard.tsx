@@ -18,29 +18,93 @@ interface StudioWizardProps {
     email: string;
     company?: string | null;
   }>;
+  initialInvoice?: PersistedStudioInvoice | null;
+  initialPrompt?: string;
 }
 
-export function StudioWizard({ knownClients }: StudioWizardProps) {
+export function StudioWizard({ knownClients, initialInvoice, initialPrompt }: StudioWizardProps) {
   const [clients, setClients] = useState(knownClients);
-  const [currentStep, setCurrentStep] = useState<StudioStep>("DESCRIBE");
+  const [savedPrompt, setSavedPrompt] = useState(initialPrompt || "");
+
+  // Convert initialInvoice to ReviewDraftFormData if provided
+  const initialDraftData: Partial<ReviewDraftFormData> = React.useMemo(() => {
+    if (!initialInvoice) return {};
+    const invoiceDateStr =
+      initialInvoice.invoiceDate instanceof Date
+        ? initialInvoice.invoiceDate.toISOString().substring(0, 10)
+        : typeof initialInvoice.invoiceDate === "string"
+        ? initialInvoice.invoiceDate.substring(0, 10)
+        : "";
+    const dueDateStr =
+      initialInvoice.dueDate instanceof Date
+        ? initialInvoice.dueDate.toISOString().substring(0, 10)
+        : typeof initialInvoice.dueDate === "string"
+        ? initialInvoice.dueDate.substring(0, 10)
+        : "";
+
+    const mappedItems: EditableLineItem[] = (initialInvoice.lineItems || []).map((li, idx) => ({
+      id: li.id || `item-${idx + 1}-${Date.now()}`,
+      description: li.description || "",
+      quantity: li.quantity || 1,
+      unitPriceDollars: (li.unitPriceMinorUnits / 100).toFixed(2),
+    }));
+
+    return {
+      clientId: initialInvoice.clientId,
+      recipientEmail: initialInvoice.client?.email || "",
+      title: initialInvoice.title,
+      invoiceDate: invoiceDateStr,
+      dueDate: dueDateStr,
+      currency: initialInvoice.currency || "USD",
+      taxRatePercent: (initialInvoice.taxRateBasisPoints || 0) / 100,
+      lineItems: mappedItems.length > 0 ? mappedItems : [
+        {
+          id: `item-1-${Date.now()}`,
+          description: "",
+          quantity: 1,
+          unitPriceDollars: "",
+        },
+      ],
+      notes: initialInvoice.notes || "",
+      terms: initialInvoice.terms || "Payment due upon receipt or within net terms.",
+    };
+  }, [initialInvoice]);
+
+  const [currentStep, setCurrentStep] = useState<StudioStep>(() => {
+    if (initialInvoice) {
+      if (initialInvoice.paypalInvoiceId) return "CONFIRMED";
+      return "REVIEW";
+    }
+    return "DESCRIBE";
+  });
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractionError, setExtractionError] = useState<string | null>(null);
 
   // Review step state
-  const [draftFormData, setDraftFormData] = useState<Partial<ReviewDraftFormData>>({});
+  const [draftFormData, setDraftFormData] = useState<Partial<ReviewDraftFormData>>(initialDraftData);
   const [missingFields, setMissingFields] = useState<string[]>([]);
   const [extractionSource, setExtractionSource] = useState<"ai_model" | "deterministic_rule_based">("deterministic_rule_based");
   const [modelName, setModelName] = useState<string | undefined>(undefined);
 
   // Persisted state after saving draft
-  const [persistedInvoice, setPersistedInvoice] = useState<PersistedStudioInvoice | null>(null);
+  const [persistedInvoice, setPersistedInvoice] = useState<PersistedStudioInvoice | null>(initialInvoice || null);
   const [materialPayloadHash, setMaterialPayloadHash] = useState<string>("");
 
   // Confirmed PayPal result
-  const [paypalResult, setPaypalResult] = useState<PayPalDraftResult | null>(null);
+  const [paypalResult, setPaypalResult] = useState<PayPalDraftResult | null>(() => {
+    if (initialInvoice?.paypalInvoiceId) {
+      return {
+        paypalInvoiceId: initialInvoice.paypalInvoiceId,
+        invoiceId: initialInvoice.id,
+        status: initialInvoice.status || initialInvoice.cashpilotStatus || "DRAFT",
+      };
+    }
+    return null;
+  });
 
   // Step 1: Handle Extraction Success
   const handleDraftGenerated = (promptText: string, extractionResponse: ExtractionResponseData) => {
+    setSavedPrompt(promptText);
     setIsExtracting(false);
     setExtractionError(null);
 
@@ -218,7 +282,18 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
   const handleDraftSaved = (savedInvoice: PersistedStudioInvoice, payloadHash: string) => {
     setPersistedInvoice(savedInvoice);
     setMaterialPayloadHash(payloadHash);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", `/invoices/new?draftId=${savedInvoice.id}`);
+    }
     setCurrentStep("APPROVE");
+  };
+
+  const handleSaveOnly = (savedInvoice: PersistedStudioInvoice, payloadHash: string) => {
+    setPersistedInvoice(savedInvoice);
+    setMaterialPayloadHash(payloadHash);
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", `/invoices/new?draftId=${savedInvoice.id}`);
+    }
   };
 
   // Step 3: Handle PayPal Sandbox Draft Created
@@ -236,6 +311,10 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
     setMaterialPayloadHash("");
     setPaypalResult(null);
     setExtractionError(null);
+    setSavedPrompt("");
+    if (typeof window !== "undefined") {
+      window.history.replaceState(null, "", "/invoices/new");
+    }
   };
 
   // Progress Steps Definition
@@ -317,6 +396,7 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
       {/* Wizard Step Content Rendering */}
       {currentStep === "DESCRIBE" && (
         <DescribeStep
+          initialPrompt={savedPrompt}
           onDraftGenerated={handleDraftGenerated}
           onManualDraftRequested={handleManualDraftRequested}
           isLoading={isExtracting}
@@ -332,8 +412,10 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
           missingFields={missingFields}
           extractionSource={extractionSource}
           modelName={modelName}
+          persistedInvoiceId={persistedInvoice?.id}
           onBack={() => setCurrentStep("DESCRIBE")}
           onDraftSaved={handleDraftSaved}
+          onSaveOnly={handleSaveOnly}
         />
       )}
 
@@ -351,6 +433,7 @@ export function StudioWizard({ knownClients }: StudioWizardProps) {
           persistedInvoice={persistedInvoice}
           paypalResult={paypalResult}
           onReset={handleReset}
+          onBackToEdit={() => setCurrentStep("REVIEW")}
         />
       )}
     </div>

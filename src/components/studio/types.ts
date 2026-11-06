@@ -9,6 +9,8 @@ export interface PersistedStudioInvoice {
   clientId: string;
   title: string;
   status: string;
+  cashpilotStatus?: string;
+  paypalInvoiceId?: string | null;
   currency: string;
   subtotalMinorUnits: number;
   taxMinorUnits: number;

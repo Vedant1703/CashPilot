@@ -6,6 +6,7 @@ import { Sparkles, ArrowRight, ShieldCheck, FileEdit } from "lucide-react";
 import { ExtractionResponseData } from "./types";
 
 interface DescribeStepProps {
+  initialPrompt?: string;
   onDraftGenerated: (prompt: string, extractionData: ExtractionResponseData) => void;
   onManualDraftRequested: () => void;
   isLoading: boolean;
@@ -13,12 +14,13 @@ interface DescribeStepProps {
 }
 
 export function DescribeStep({
+  initialPrompt = "",
   onDraftGenerated,
   onManualDraftRequested,
   isLoading,
   error,
 }: DescribeStepProps) {
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(initialPrompt);
   const [localGuidance, setLocalGuidance] = useState<string | null>(null);
 
   const examplePrompts = [

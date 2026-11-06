@@ -3,7 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { formatMoney } from "@/lib/money";
-import { CheckCircle2, ArrowRight, FileText, LayoutGrid, RotateCcw, AlertCircle } from "lucide-react";
+import { CheckCircle2, ArrowRight, FileText, LayoutGrid, RotateCcw, AlertCircle, Edit3 } from "lucide-react";
 import { NaviAvatar } from "@/components/navi/navi-avatar";
 import { PersistedStudioInvoice, PayPalDraftResult } from "./types";
 
@@ -11,12 +11,14 @@ interface PayPalConfirmStepProps {
   persistedInvoice: PersistedStudioInvoice;
   paypalResult: PayPalDraftResult | null;
   onReset: () => void;
+  onBackToEdit?: () => void;
 }
 
 export function PayPalConfirmStep({
   persistedInvoice,
   paypalResult,
   onReset,
+  onBackToEdit,
 }: PayPalConfirmStepProps) {
   const isUnknownOutcome = paypalResult?.status === "UNKNOWN" || paypalResult?.isUnknownOutcome;
   const paypalInvoiceId = paypalResult?.paypalInvoiceId ?? "Pending Reconciliation";
@@ -161,14 +163,28 @@ export function PayPalConfirmStep({
 
         {/* Action Buttons */}
         <div className="pt-4 border-t border-[#EEF2F6] flex flex-col sm:flex-row items-center justify-between gap-3">
-          <button
-            type="button"
-            onClick={onReset}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-[#E3E8EF] text-xs font-medium text-[#12263F] hover:bg-[#F6F5F1] transition-colors touch-target"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Draft another invoice</span>
-          </button>
+          <div className="w-full sm:w-auto flex flex-col sm:flex-row items-center gap-2">
+            <button
+              type="button"
+              onClick={onReset}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-[#E3E8EF] text-xs font-medium text-[#12263F] hover:bg-[#F6F5F1] transition-colors touch-target"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Draft another invoice</span>
+            </button>
+
+            {onBackToEdit && (
+              <button
+                type="button"
+                onClick={onBackToEdit}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border border-[#E3E8EF] text-xs font-medium text-[#B4440B] hover:bg-[#FDF2EB] transition-colors touch-target"
+                title="Return to edit. Any edits will unlink the PayPal draft and require re-approval."
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span>Return to Edit</span>
+              </button>
+            )}
+          </div>
 
           <div className="w-full sm:w-auto flex flex-col sm:flex-row items-center gap-2">
             <Link
