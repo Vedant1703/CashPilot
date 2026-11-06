@@ -16,6 +16,7 @@ import { db } from "@/lib/db/client";
 import {
   computeInvoiceTotals,
   minorUnitsToDecimalString,
+  parseMoneyToMinorUnits,
 } from "@/lib/money";
 import {
   invoiceInputSchema,
@@ -1003,6 +1004,41 @@ export async function createPayPalDraft(
       error: draftResult.error.message,
       code: isUnknown ? "OPERATION_UNKNOWN_OUTCOME" : draftResult.error.code,
     };
+  }
+
+  // 10.5. Reconcile provider returned totals against CashPilot authoritative totals (GEN-08)
+  const paypalReturnedTotal = draftResult.data.amount?.value;
+  if (paypalReturnedTotal) {
+    const paypalTotalMinorUnits = parseMoneyToMinorUnits(paypalReturnedTotal);
+    if (paypalTotalMinorUnits !== null && paypalTotalMinorUnits !== invoice.totalMinorUnits) {
+      await updateOperationAndAudit(
+        operation.id,
+        workspaceId,
+        invoice.id,
+        approval.id,
+        actorId,
+        OperationAttemptState.FAILED,
+        false,
+        "TOTAL_MISMATCH",
+        `PayPal draft total (${paypalReturnedTotal} ${invoice.currency}) does not match CashPilot authoritative total (${minorUnitsToDecimalString(invoice.totalMinorUnits)} ${invoice.currency}). Draft rejected for financial safety.`,
+        draftResult.correlationId
+      );
+
+      // Transition invoice to NEEDS_REVIEW to prevent sending mismatched invoice
+      await db.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          cashpilotStatus: CashPilotStatus.NEEDS_REVIEW,
+          syncIsStale: true,
+        },
+      });
+
+      return {
+        ok: false,
+        error: `Financial safety rejection: PayPal draft total (${paypalReturnedTotal} ${invoice.currency}) does not match CashPilot authoritative total (${minorUnitsToDecimalString(invoice.totalMinorUnits)} ${invoice.currency}).`,
+        code: "TOTAL_MISMATCH",
+      };
+    }
   }
 
   // 11. Success: Persist PayPal invoice ID and status inside a transaction
@@ -2892,14 +2928,30 @@ export async function refreshInvoiceStatus(
 export function buildPayPalInvoicePayload(
   invoice: NonNullable<Awaited<ReturnType<typeof getInvoiceById>>>
 ): PayPalInvoicePayload {
-  const items: PayPalInvoicePayload["items"] = invoice.lineItems.map((li) => ({
-    name: li.description,
-    quantity: String(li.quantity),
-    unit_amount: {
-      currency_code: invoice.currency,
-      value: minorUnitsToDecimalString(li.unitPriceMinorUnits),
-    },
-  }));
+  const taxPercent =
+    invoice.taxRateBasisPoints > 0
+      ? (invoice.taxRateBasisPoints / 100).toString()
+      : undefined;
+
+  const items: PayPalInvoicePayload["items"] = invoice.lineItems.map((li) => {
+    const item: PayPalInvoicePayload["items"][number] = {
+      name: li.description,
+      quantity: String(li.quantity),
+      unit_amount: {
+        currency_code: invoice.currency,
+        value: minorUnitsToDecimalString(li.unitPriceMinorUnits),
+      },
+    };
+
+    if (taxPercent) {
+      item.tax = {
+        name: "Sales Tax",
+        percent: taxPercent,
+      };
+    }
+
+    return item;
+  });
 
   return {
     detail: {

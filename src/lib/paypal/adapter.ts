@@ -34,6 +34,14 @@ export interface PayPalInvoiceLineItem {
     currency_code: string;
     value: string;         // decimal string, e.g. "150.00"
   };
+  tax?: {
+    name: string;
+    percent: string;       // decimal percentage string e.g. "5" or "5.00"
+    amount?: {
+      currency_code: string;
+      value: string;
+    };
+  };
 }
 
 export interface PayPalInvoicePayload {
@@ -75,6 +83,16 @@ export interface PayPalInvoiceResponse {
   amount?: {
     currency_code: string;
     value: string;
+    breakdown?: {
+      item_total?: {
+        currency_code: string;
+        value: string;
+      };
+      tax_total?: {
+        currency_code: string;
+        value: string;
+      };
+    };
   };
   links?: Array<{ rel: string; href: string; method: string }>;
 }

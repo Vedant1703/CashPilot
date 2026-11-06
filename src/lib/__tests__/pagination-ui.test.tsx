@@ -41,8 +41,11 @@ describe("Pagination UI Components", () => {
         cashpilotStatus: CashPilotStatus.AWAITING_PAYMENT,
         paypalStatus: "SENT",
         paypalInvoiceId: `PAYPAL-INV-${i + 1}`,
-        issueDate: "2026-10-01",
-        dueDate: "2026-10-31",
+        invoiceDate: new Date("2026-10-01"),
+        dueDate: new Date("2026-10-31"),
+        isDemoData: false,
+        syncIsStale: false,
+        aiDraftId: null,
         client: {
           id: `client-${i + 1}`,
           name: `Client #${i + 1}`,

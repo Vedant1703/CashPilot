@@ -219,7 +219,7 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
       expect(payload.primary_recipients[0].billing_info.name?.given_name).toBe("Jane");
       expect(payload.primary_recipients[0].billing_info.name?.surname).toBe("Smith Consulting");
 
-      // Verify line items mapping (minor units to decimal string)
+      // Verify line items mapping (minor units to decimal string and tax)
       expect(payload.items).toHaveLength(2);
       expect(payload.items[0]).toEqual({
         name: "Kubernetes Cluster Provisioning",
@@ -228,6 +228,10 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
           currency_code: "USD",
           value: "750.00",
         },
+        tax: {
+          name: "Sales Tax",
+          percent: "10",
+        },
       });
       expect(payload.items[1]).toEqual({
         name: "Monitoring & Alerting Setup",
@@ -235,6 +239,10 @@ describe("PayPal Sandbox Draft Creation & Status Synchronization", () => {
         unit_amount: {
           currency_code: "USD",
           value: "500.00",
+        },
+        tax: {
+          name: "Sales Tax",
+          percent: "10",
         },
       });
     });
