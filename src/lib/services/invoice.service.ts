@@ -3462,11 +3462,11 @@ export function buildPayPalInvoicePayload(
     primary_recipients: [
       {
         billing_info: {
-          email_address: invoice.client.email,
-          name: invoice.client.name
+          email_address: invoice.client.email.trim(),
+          name: invoice.client.name?.trim()
             ? {
-                given_name: invoice.client.name.split(" ")[0] ?? "",
-                surname: invoice.client.name.split(" ").slice(1).join(" ") || undefined,
+                given_name: invoice.client.name.trim().split(" ")[0] ?? "",
+                surname: invoice.client.name.trim().split(" ").slice(1).join(" ") || undefined,
               }
             : undefined,
         },

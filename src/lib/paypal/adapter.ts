@@ -109,6 +109,52 @@ export interface PayPalApiError {
   details?: unknown;
 }
 
+/**
+ * Helper to format rich diagnostic error messages from PayPal error payloads.
+ * Surfaces root-cause details (e.g. CANNOT_PAY_OWN_INVOICE, invalid parameters)
+ * without exposing credentials or internal tokens.
+ */
+export function formatPayPalErrorMessage(
+  errorBody: any,
+  httpStatus?: number,
+  fallbackMessage = "PayPal API error"
+): string {
+  if (!errorBody || typeof errorBody !== "object") {
+    return httpStatus ? `${fallbackMessage} (HTTP ${httpStatus})` : fallbackMessage;
+  }
+
+  const baseMessage =
+    errorBody.message ||
+    errorBody.error_description ||
+    errorBody.name ||
+    (httpStatus ? `${fallbackMessage} (HTTP ${httpStatus})` : fallbackMessage);
+
+  if (Array.isArray(errorBody.details) && errorBody.details.length > 0) {
+    const detailList = errorBody.details
+      .map((d: any) => {
+        const issue = d.description || d.issue || "";
+        const field = d.field ? ` [field: ${d.field}]` : "";
+        return `${issue}${field}`.trim();
+      })
+      .filter(Boolean);
+
+    if (detailList.length > 0) {
+      const detailsText = detailList.join("; ");
+      const isCannotPayOwn = errorBody.details.some(
+        (d: any) =>
+          d.issue === "CANNOT_PAY_OWN_INVOICE" ||
+          (typeof d.description === "string" && d.description.toLowerCase().includes("same as the merchant"))
+      );
+      if (isCannotPayOwn) {
+        return `${baseMessage}: Cannot bill your own PayPal account. In PayPal Sandbox, the recipient email must differ from the merchant account. Details: ${detailsText}`;
+      }
+      return `${baseMessage}: ${detailsText}`;
+    }
+  }
+
+  return baseMessage;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Token Cache (in-memory only, never persisted or logged)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -278,12 +324,14 @@ export async function createPayPalDraftInvoice(
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
+    const effectiveCorrelationId = correlationId ?? errorBody.debug_id ?? undefined;
+    const formattedMessage = formatPayPalErrorMessage(errorBody, response.status, "PayPal draft creation error");
     return {
       success: false,
-      correlationId,
+      correlationId: effectiveCorrelationId,
       error: {
         code: errorBody.name ?? "PAYPAL_API_ERROR",
-        message: errorBody.message ?? `PayPal API error: ${response.status}`,
+        message: effectiveCorrelationId ? `${formattedMessage} (correlation-id: ${effectiveCorrelationId})` : formattedMessage,
         httpStatus: response.status,
         details: errorBody.details,
       },
@@ -355,12 +403,14 @@ export async function sendPayPalInvoice(
   }
 
   const errorBody = await response.json().catch(() => ({}));
+  const effectiveCorrelationId = correlationId ?? errorBody.debug_id ?? undefined;
+  const formattedMessage = formatPayPalErrorMessage(errorBody, response.status, "PayPal send error");
   return {
     success: false,
-    correlationId,
+    correlationId: effectiveCorrelationId,
     error: {
       code: errorBody.name ?? "PAYPAL_SEND_ERROR",
-      message: errorBody.message ?? `PayPal send error: ${response.status}`,
+      message: effectiveCorrelationId ? `${formattedMessage} (correlation-id: ${effectiveCorrelationId})` : formattedMessage,
       httpStatus: response.status,
       details: errorBody.details,
     },
@@ -415,13 +465,16 @@ export async function getPayPalInvoiceStatus(
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
+    const effectiveCorrelationId = correlationId ?? errorBody.debug_id ?? undefined;
+    const formattedMessage = formatPayPalErrorMessage(errorBody, response.status, "PayPal get error");
     return {
       success: false,
-      correlationId,
+      correlationId: effectiveCorrelationId,
       error: {
         code: errorBody.name ?? "PAYPAL_GET_ERROR",
-        message: errorBody.message ?? `PayPal get error: ${response.status}`,
+        message: effectiveCorrelationId ? `${formattedMessage} (correlation-id: ${effectiveCorrelationId})` : formattedMessage,
         httpStatus: response.status,
+        details: errorBody.details,
       },
     };
   }
@@ -514,12 +567,14 @@ export async function sendPayPalReminder(
   }
 
   const errorBody = await response.json().catch(() => ({}));
+  const effectiveCorrelationId = correlationId ?? errorBody.debug_id ?? undefined;
+  const formattedMessage = formatPayPalErrorMessage(errorBody, response.status, "PayPal reminder error");
   return {
     success: false,
-    correlationId,
+    correlationId: effectiveCorrelationId,
     error: {
       code: errorBody.name ?? "PAYPAL_REMINDER_ERROR",
-      message: errorBody.message ?? `PayPal reminder error: ${response.status}`,
+      message: effectiveCorrelationId ? `${formattedMessage} (correlation-id: ${effectiveCorrelationId})` : formattedMessage,
       httpStatus: response.status,
       details: errorBody.details,
     },
@@ -614,12 +669,14 @@ export async function cancelPayPalInvoice(
   }
 
   const errorBody = await response.json().catch(() => ({}));
+  const effectiveCorrelationId = correlationId ?? errorBody.debug_id ?? undefined;
+  const formattedMessage = formatPayPalErrorMessage(errorBody, response.status, "PayPal invoice cancellation failed");
   return {
     success: false,
-    correlationId,
+    correlationId: effectiveCorrelationId,
     error: {
       code: errorBody.name ?? "PAYPAL_CANCEL_ERROR",
-      message: errorBody.message ?? `PayPal invoice cancellation failed with HTTP ${response.status}`,
+      message: effectiveCorrelationId ? `${formattedMessage} (correlation-id: ${effectiveCorrelationId})` : formattedMessage,
       httpStatus: response.status,
       details: errorBody.details,
     },
