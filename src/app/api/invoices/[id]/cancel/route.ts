@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db/client";
-import { cancelInvoice } from "@/lib/services/invoice.service";
+import { cancelInvoice, cancelLocalDraft } from "@/lib/services/invoice.service";
 import { cancelInvoiceRequestSchema } from "@/lib/validations/invoice";
 import { authorizeWorkspaceAccess } from "@/lib/auth/guard";
 
@@ -84,19 +84,25 @@ export async function POST(
       );
     }
 
-    // 4. Execute cancellation with approval verification and PayPal API call
-    const result = await cancelInvoice(
-      auth.context.workspaceId,
-      auth.context.actorId,
-      invoiceId,
-      parsed.data?.approvalId,
-      {
-        note: parsed.data?.note,
-        subject: parsed.data?.subject,
-        sendToRecipient: parsed.data?.sendToRecipient,
-        sendToInvoicer: parsed.data?.sendToInvoicer,
-      }
-    );
+    // 4. Execute cancellation (distinguish local draft vs provider cancellation)
+    const result = parsed.data?.localOnly
+      ? await cancelLocalDraft(
+          auth.context.workspaceId,
+          auth.context.actorId,
+          invoiceId
+        )
+      : await cancelInvoice(
+          auth.context.workspaceId,
+          auth.context.actorId,
+          invoiceId,
+          parsed.data?.approvalId,
+          {
+            note: parsed.data?.note,
+            subject: parsed.data?.subject,
+            sendToRecipient: parsed.data?.sendToRecipient,
+            sendToInvoicer: parsed.data?.sendToInvoicer,
+          }
+        );
 
     if (!result.ok) {
       const status =

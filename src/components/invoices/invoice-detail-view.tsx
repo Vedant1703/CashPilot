@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { CashPilotStatus, type Prisma } from "@prisma/client";
 import { StatusBadge } from "@/components/invoices/status-badge";
 import { NaviAvatar, NaviState } from "@/components/navi/navi-avatar";
@@ -27,6 +28,7 @@ import {
   Info,
   ArrowRight,
   Edit3,
+  RotateCcw,
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
@@ -108,8 +110,11 @@ interface SyncAlert {
 }
 
 export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
+  const router = useRouter();
   const [invoice, setInvoice] = useState<SerializedInvoiceDetail>(initialInvoice);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isReissuing, setIsReissuing] = useState(false);
+  const [isCancellingDraft, setIsCancellingDraft] = useState(false);
   const [syncAlert, setSyncAlert] = useState<SyncAlert | null>(null);
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isRemindModalOpen, setIsRemindModalOpen] = useState(false);
@@ -143,6 +148,72 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
     canCancelInvoice(invoice.cashpilotStatus, invoice.paypalStatus) &&
     !invoice.syncIsStale &&
     invoice.cashpilotStatus !== CashPilotStatus.NEEDS_REVIEW;
+
+  const handleCancelLocalDraft = async () => {
+    if (!window.confirm("Are you sure you want to cancel this local draft?")) return;
+    setIsCancellingDraft(true);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setInvoice((prev) => ({
+          ...prev,
+          cashpilotStatus: CashPilotStatus.CANCELLED,
+        }));
+        setSyncAlert({
+          type: "info",
+          title: "Draft Cancelled",
+          message: "This local draft invoice has been marked CANCELLED.",
+        });
+      } else {
+        setSyncAlert({
+          type: "error",
+          title: "Cancellation Failed",
+          message: data.error || "Failed to cancel draft.",
+        });
+      }
+    } catch (err) {
+      setSyncAlert({
+        type: "error",
+        title: "Cancellation Error",
+        message: err instanceof Error ? err.message : "Network error",
+      });
+    } finally {
+      setIsCancellingDraft(false);
+    }
+  };
+
+  const handleReissueInvoice = async () => {
+    setIsReissuing(true);
+    try {
+      const res = await fetch(`/api/invoices/${invoice.id}/reissue`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (res.ok && data.success && data.data?.newInvoiceId) {
+        router.push(`/invoices/new?draftId=${data.data.newInvoiceId}`);
+      } else {
+        setSyncAlert({
+          type: "error",
+          title: "Reissue Failed",
+          message: data.error || "Failed to reissue invoice.",
+        });
+        setIsReissuing(false);
+      }
+    } catch (err) {
+      setSyncAlert({
+        type: "error",
+        title: "Reissue Error",
+        message: err instanceof Error ? err.message : "Network error",
+      });
+      setIsReissuing(false);
+    }
+  };
 
   const handleCancelSuccess = (cancelResult: {
     operationId: string;
@@ -555,6 +626,35 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
                 <span>Reminder in cooldown</span>
               </button>
             ))}
+
+          {/* Reissue as New Invoice Action Button (Only if CANCELLED status) */}
+          {invoice.cashpilotStatus === CashPilotStatus.CANCELLED && (
+            <button
+              type="button"
+              onClick={handleReissueInvoice}
+              disabled={isReissuing}
+              aria-label="Reissue cancelled invoice as a new draft in Invoice Studio"
+              aria-busy={isReissuing}
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl bg-[#0C7C61] hover:bg-[#09604B] text-white text-xs font-semibold shadow-xs active:scale-[0.98] transition-all disabled:opacity-60 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
+            >
+              <RotateCcw className={`w-3.5 h-3.5 shrink-0 ${isReissuing ? "animate-spin" : ""}`} aria-hidden="true" />
+              <span>{isReissuing ? "Reissuing Draft..." : "Reissue as New Invoice"}</span>
+            </button>
+          )}
+
+          {/* Local Draft Cancel Button (Only if DRAFT and no PayPal draft created yet) */}
+          {invoice.cashpilotStatus === CashPilotStatus.DRAFT && !invoice.paypalInvoiceId && (
+            <button
+              type="button"
+              onClick={handleCancelLocalDraft}
+              disabled={isCancellingDraft}
+              aria-label="Cancel draft invoice locally"
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl border border-[#FDA29B] bg-white hover:bg-[#FEF3F2] text-[#B42318] text-xs font-semibold shadow-xs active:scale-[0.98] transition-all disabled:opacity-60 focus-visible:ring-2 focus-visible:ring-[#D92D20] focus-visible:outline-hidden"
+            >
+              <XCircle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>{isCancellingDraft ? "Cancelling..." : "Cancel Draft"}</span>
+            </button>
+          )}
 
           {/* Cancel Invoice Action Button (Only if eligible: sent unpaid invoice & fresh provider status) */}
           {canCancel && (

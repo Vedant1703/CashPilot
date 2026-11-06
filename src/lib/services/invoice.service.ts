@@ -2425,7 +2425,7 @@ export async function sendInvoiceReminder(
 export interface CancelInvoiceResult {
   operationId: string;
   invoiceId: string;
-  paypalInvoiceId: string;
+  paypalInvoiceId: string | null;
   previousStatus: CashPilotStatus;
   currentStatus: CashPilotStatus;
   previousPaypalStatus: string | null;
@@ -2471,7 +2471,7 @@ export async function cancelInvoice(
     };
   }
 
-  // 3. Pre-condition: PayPal invoice ID must exist
+  // 3. Pre-condition: PayPal invoice ID must exist for sent invoice cancellation
   if (!invoice.paypalInvoiceId) {
     return {
       ok: false,
@@ -2908,6 +2908,184 @@ export async function cancelInvoice(
       currentPaypalStatus: "CANCELLED",
       cancelledAt: now,
       correlationId: cancelResult.correlationId,
+    },
+  };
+}
+
+/**
+ * Cancel an unsent local draft invoice (GEN-07).
+ *
+ * Local drafts that have not been sent to PayPal Sandbox can be safely cancelled
+ * without calling PayPal. Transitions status to CANCELLED and records audit event.
+ */
+export async function cancelLocalDraft(
+  workspaceId: string,
+  actorId: string,
+  invoiceId: string
+): Promise<ServiceResult<CancelInvoiceResult>> {
+  const invoice = await getInvoiceById(invoiceId, workspaceId);
+  if (!invoice) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  if (invoice.cashpilotStatus !== CashPilotStatus.DRAFT) {
+    return {
+      ok: false,
+      error: `Only DRAFT invoices can be cancelled as local drafts (current status: ${invoice.cashpilotStatus}).`,
+      code: "INVALID_INVOICE_STATE",
+    };
+  }
+
+  const now = new Date();
+  const previousStatus = invoice.cashpilotStatus;
+
+  await db.$transaction(async (tx) => {
+    await tx.approval.updateMany({
+      where: {
+        invoiceId,
+        workspaceId,
+        status: { in: [ApprovalStatus.PENDING, ApprovalStatus.APPROVED] },
+      },
+      data: {
+        status: ApprovalStatus.INVALIDATED,
+        invalidatedAt: now,
+        invalidationReason: "Draft invoice cancelled locally by user",
+      },
+    });
+
+    await tx.invoice.update({
+      where: { id: invoiceId },
+      data: {
+        cashpilotStatus: CashPilotStatus.CANCELLED,
+        updatedAt: now,
+      },
+    });
+
+    await tx.activityEvent.create({
+      data: {
+        workspaceId,
+        invoiceId,
+        eventType: ActivityEventType.INVOICE_STATUS_CHANGED,
+        actorType: ActorType.USER,
+        actorId,
+        description: "Local draft invoice was cancelled by user (no PayPal operation required)",
+        metadata: {
+          previousStatus,
+          newStatus: CashPilotStatus.CANCELLED,
+          isLocalDraft: true,
+        },
+      },
+    });
+  });
+
+  return {
+    ok: true,
+    data: {
+      operationId: `local-cancel-${Date.now()}`,
+      invoiceId: invoice.id,
+      paypalInvoiceId: null,
+      previousStatus,
+      currentStatus: CashPilotStatus.CANCELLED,
+      previousPaypalStatus: null,
+      currentPaypalStatus: "LOCAL_DRAFT_CANCELLED",
+      cancelledAt: now,
+    },
+  };
+}
+
+/**
+ * Reissue a cancelled invoice as a new draft invoice (GEN-07).
+ *
+ * Preserves the cancelled invoice as an immutable audit record and creates
+ * a fresh DRAFT invoice cloned from the original's client, currency, tax rate,
+ * and line items, requiring brand new human approval and a new PayPal draft.
+ */
+export async function reissueCancelledInvoice(
+  workspaceId: string,
+  actorId: string,
+  invoiceId: string
+): Promise<
+  ServiceResult<{
+    newInvoiceId: string;
+    newInvoice: NonNullable<Awaited<ReturnType<typeof getInvoice>>["data"]>["invoice"];
+    originalInvoiceId: string;
+    materialPayloadHash: string;
+  }>
+> {
+  // 1. Fetch original invoice with client and line items
+  const original = await getInvoiceById(invoiceId, workspaceId);
+  if (!original) {
+    return { ok: false, error: "Invoice not found in this workspace", code: "NOT_FOUND" };
+  }
+
+  // 2. Invariant: only CANCELLED invoices can be reissued
+  if (original.cashpilotStatus !== CashPilotStatus.CANCELLED) {
+    return {
+      ok: false,
+      error: `Only CANCELLED invoices can be reissued (current status: ${original.cashpilotStatus})`,
+      code: "INVALID_INVOICE_STATUS",
+    };
+  }
+
+  // 3. Prepare replacement invoice data
+  const originalLabel = original.number || original.id.slice(0, 8);
+  const replacementNotes = original.notes
+    ? `${original.notes}\n[Replaces cancelled invoice #${originalLabel}]`
+    : `[Replaces cancelled invoice #${originalLabel}]`;
+
+  const lineItemsInput = original.lineItems.map((li) => ({
+    description: li.description,
+    quantity: li.quantity,
+    unitPriceMinorUnits: li.unitPriceMinorUnits,
+  }));
+
+  const invoiceInput: InvoiceInput = {
+    clientId: original.clientId,
+    title: original.title ? `${original.title} (Reissued)` : "Reissued Invoice",
+    notes: replacementNotes,
+    terms: original.terms || undefined,
+    currency: original.currency as SupportedCurrency,
+    taxRateBasisPoints: original.taxRateBasisPoints,
+    invoiceDate: new Date().toISOString().substring(0, 10),
+    dueDate: new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10),
+    lineItems: lineItemsInput,
+  };
+
+  // 4. Create new draft invoice using authoritative createInvoice
+  const createResult = await createInvoice(workspaceId, actorId, invoiceInput);
+  if (!createResult.ok) {
+    return {
+      ok: false,
+      error: `Failed to create replacement invoice: ${createResult.error}`,
+      code: createResult.code,
+    };
+  }
+
+  const newInvoice = createResult.data.invoice;
+
+  // 5. Add audit event to original invoice documenting the reissue
+  await db.activityEvent.create({
+    data: {
+      workspaceId,
+      invoiceId: original.id,
+      eventType: ActivityEventType.INVOICE_STATUS_CHANGED,
+      actorType: ActorType.USER,
+      actorId,
+      description: `Replacement invoice created (#${newInvoice.number || newInvoice.id}) for cancelled invoice`,
+      metadata: {
+        reissuedToInvoiceId: newInvoice.id,
+        reissuedToInvoiceNumber: newInvoice.number,
+      },
+    },
+  });
+
+  return {
+    ok: true,
+    data: {
+      newInvoiceId: newInvoice.id,
+      newInvoice,
+      originalInvoiceId: original.id,
+      materialPayloadHash: createResult.data.materialPayloadHash,
     },
   };
 }
