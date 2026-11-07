@@ -20,6 +20,13 @@ import type {
   InvoiceSelectorOption,
   OutcomeBadgeVariant,
 } from "@/lib/services/activity.service";
+
+export type {
+  ActivityItem,
+  InvoiceJourneyTrace,
+  InvoiceSelectorOption,
+  OutcomeBadgeVariant,
+};
 import { InvoiceJourneyTracker } from "./invoice-journey-tracker";
 import { SecurityExplainerCard } from "./security-explainer-card";
 
@@ -50,6 +57,7 @@ export function ActivityFeed({
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     initialInvoiceId || initialTrace?.invoiceId || selectorOptions[0]?.id || null
   );
+  const [selectedActivityId, setSelectedActivityId] = useState<string | null>(null);
 
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [resultFilter, setResultFilter] = useState<string>("all");
@@ -372,19 +380,44 @@ export function ActivityFeed({
                   {/* Event Rows */}
                   <div className="divide-y divide-[#EEF2F6] rounded-xl border border-[#EEF2F6] overflow-hidden">
                     {eventList.map((item) => {
-                      const isSelected = item.invoiceId && item.invoiceId === selectedInvoiceId;
+                      const isDirectlySelected = item.id === selectedActivityId;
+                      const isRelatedInvoice = Boolean(
+                        selectedInvoiceId &&
+                          item.invoiceId === selectedInvoiceId &&
+                          !isDirectlySelected
+                      );
+
+                      let rowStyling = "p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all outline-none ";
+                      if (isDirectlySelected) {
+                        rowStyling += "bg-[#E8F5F1] border-l-4 border-l-[#0C7C61] ring-1 ring-[#0C7C61]/30 shadow-xs z-10";
+                      } else if (isRelatedInvoice) {
+                        rowStyling += "bg-[#F8FAFC] border-l-2 border-l-[#94A3B8] border-dashed hover:bg-[#F1F5F9]";
+                      } else {
+                        rowStyling += item.invoiceId
+                          ? "hover:bg-[#F6F5F1]/80 focus-visible:ring-2 focus-visible:ring-[#0C7C61]"
+                          : "";
+                      }
 
                       return (
                         <div
                           key={item.id}
+                          tabIndex={item.invoiceId ? 0 : undefined}
+                          role={item.invoiceId ? "button" : undefined}
+                          aria-selected={isDirectlySelected}
                           onClick={() => {
+                            setSelectedActivityId(item.id);
                             if (item.invoiceId) {
                               handleSelectInvoice(item.invoiceId);
                             }
                           }}
-                          className={`p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                            item.invoiceId ? "cursor-pointer hover:bg-[#F6F5F1]/60" : ""
-                          } ${isSelected ? "bg-[#E8F5F1]/30 border-l-4 border-l-[#0C7C61]" : ""}`}
+                          onKeyDown={(e) => {
+                            if (item.invoiceId && (e.key === "Enter" || e.key === " ")) {
+                              e.preventDefault();
+                              setSelectedActivityId(item.id);
+                              handleSelectInvoice(item.invoiceId);
+                            }
+                          }}
+                          className={`${rowStyling} ${item.invoiceId ? "cursor-pointer" : ""}`}
                         >
                           {/* Time & Content */}
                           <div className="flex items-start gap-3 min-w-0">
@@ -399,6 +432,11 @@ export function ActivityFeed({
                                 <span className="font-semibold text-xs text-[#12263F] leading-snug">
                                   {item.title}
                                 </span>
+                                {isRelatedInvoice && (
+                                  <span className="text-[10px] text-[#64748B] font-medium bg-[#E2E8F0] px-1.5 py-0.2 rounded">
+                                    Related to active invoice
+                                  </span>
+                                )}
                               </div>
 
                               {/* Subtitle / Actor + Summary */}
@@ -413,7 +451,7 @@ export function ActivityFeed({
                             {renderOutcomeBadge(item.outcomeBadge)}
 
                             {item.invoiceId && (
-                              <ChevronRight className="w-4 h-4 text-[#8C9BAE] hidden sm:block" />
+                              <ChevronRight className={`w-4 h-4 hidden sm:block ${isDirectlySelected ? "text-[#0C7C61]" : "text-[#8C9BAE]"}`} />
                             )}
                           </div>
                         </div>

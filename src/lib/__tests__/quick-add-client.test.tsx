@@ -84,8 +84,8 @@ describe("Quick-add Client in Invoice Studio (Phase 3B)", () => {
         />
       );
 
-      // Verify the visible action exists near the selector
-      expect(html).toContain("+ Create new client");
+      // Verify the visible action exists near the selector (UX-04: single plus icon with text)
+      expect(html).toContain("Create new client");
       expect(html).toContain('id="client-select"');
       expect(html).toContain("Existing Tech Corp");
       expect(html).toContain("Quarterly Advisory Services");
@@ -106,7 +106,7 @@ describe("Quick-add Client in Invoice Studio (Phase 3B)", () => {
 
       // Verify empty client placeholder and action button
       expect(html).toContain("-- No clients in workspace --");
-      expect(html).toContain("+ Create new client");
+      expect(html).toContain("Create new client");
       expect(html).toContain("Needs your input");
     });
 

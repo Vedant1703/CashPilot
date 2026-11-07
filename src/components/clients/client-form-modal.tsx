@@ -160,148 +160,153 @@ function ClientFormModalContent({
       role="dialog"
       aria-modal="true"
       aria-labelledby="client-form-modal-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/50 backdrop-blur-xs animate-in fade-in duration-150"
     >
-      <div className="relative w-full max-w-lg my-8 rounded-2xl bg-white border border-[#E3E8EF] shadow-2xl p-6 sm:p-7 space-y-5 text-[#12263F] animate-in zoom-in-95 duration-150">
-        {/* Close Button */}
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={isSubmitting}
-          aria-label="Close client modal"
-          className="absolute top-5 right-5 p-2 rounded-xl text-[#5E718D] hover:text-[#12263F] hover:bg-[#F6F5F1] transition-colors disabled:opacity-50 min-h-[44px] min-w-[44px] flex items-center justify-center focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
-        >
-          <X className="w-5 h-5" aria-hidden="true" />
-        </button>
+      <div className="relative w-full max-w-lg max-h-[calc(100vh-2rem)] flex flex-col rounded-2xl bg-white border border-[#E3E8EF] shadow-2xl text-[#12263F] animate-in zoom-in-95 duration-150 overflow-hidden">
+        {/* Pinned Modal Header */}
+        <div className="p-5 sm:p-6 pb-4 border-b border-[#EEF2F6] shrink-0 pr-12 relative bg-[#F6F5F1]/30">
+          {/* Close Button */}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSubmitting}
+            aria-label="Close client modal"
+            className="absolute top-4 right-4 p-2 rounded-xl text-[#5E718D] hover:text-[#12263F] hover:bg-white/80 transition-colors disabled:opacity-50 min-h-[44px] min-w-[44px] flex items-center justify-center focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
+          >
+            <X className="w-5 h-5" aria-hidden="true" />
+          </button>
 
-        {/* Modal Header */}
-        <div className="flex items-center gap-3 pr-8">
-          <div className="p-2.5 rounded-xl bg-[#E8F5F1] text-[#0C7C61] shrink-0 border border-[#A3E5D4]">
-            {isEdit ? (
-              <Edit3 className="w-5 h-5 stroke-[2.25]" aria-hidden="true" />
-            ) : (
-              <UserPlus className="w-5 h-5 stroke-[2.25]" aria-hidden="true" />
-            )}
-          </div>
-          <div>
-            <h2
-              id="client-form-modal-title"
-              className="font-headline font-bold text-xl text-[#12263F]"
-            >
-              {isEdit ? "Edit Client Profile" : "Add New Client"}
-            </h2>
-            <p className="text-xs text-[#5E718D] mt-0.5">
-              {isEdit
-                ? "Update client contact information for your workspace."
-                : "Create a recipient record to use when drafting invoices."}
-            </p>
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-[#E8F5F1] text-[#0C7C61] shrink-0 border border-[#A3E5D4]">
+              {isEdit ? (
+                <Edit3 className="w-5 h-5 stroke-[2.25]" aria-hidden="true" />
+              ) : (
+                <UserPlus className="w-5 h-5 stroke-[2.25]" aria-hidden="true" />
+              )}
+            </div>
+            <div>
+              <h2
+                id="client-form-modal-title"
+                className="font-headline font-bold text-xl text-[#12263F]"
+              >
+                {isEdit ? "Edit Client Profile" : "Add New Client"}
+              </h2>
+              <p className="text-xs text-[#5E718D] mt-0.5">
+                {isEdit
+                  ? "Update client contact information for your workspace."
+                  : "Create a recipient record to use when drafting invoices."}
+              </p>
+            </div>
           </div>
         </div>
 
-        {/* Error Alert */}
-        {error && (
-          <div
-            role="alert"
-            className="p-3.5 rounded-xl bg-[#FEF3F2] border border-[#FECDCA] text-[#B42318] text-xs flex items-start gap-2.5 animate-in fade-in duration-100"
-          >
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-            <span className="leading-relaxed">{error}</span>
-          </div>
-        )}
-
         {/* Client Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <label htmlFor="client-name" className="block text-xs font-semibold text-[#12263F]">
-              Client Name <span className="text-[#B42318]">*</span>
-            </label>
-            <input
-              id="client-name"
-              type="text"
-              required
-              maxLength={100}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., Acme Corporation or Jane Smith"
-              disabled={isSubmitting}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors"
-            />
-          </div>
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 overflow-hidden">
+          {/* Scrollable Fields Body */}
+          <div className="p-5 sm:p-6 space-y-4 overflow-y-auto flex-1 overscroll-contain">
+            {/* Error Alert */}
+            {error && (
+              <div
+                role="alert"
+                className="p-3.5 rounded-xl bg-[#FEF3F2] border border-[#FECDCA] text-[#B42318] text-xs flex items-start gap-2.5 animate-in fade-in duration-100"
+              >
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+                <span className="leading-relaxed">{error}</span>
+              </div>
+            )}
 
-          <div className="space-y-1.5">
-            <label htmlFor="client-email" className="block text-xs font-semibold text-[#12263F]">
-              Billing Email <span className="text-[#B42318]">*</span>
-            </label>
-            <input
-              id="client-email"
-              type="email"
-              required
-              maxLength={255}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="e.g., billing@acme.com"
-              disabled={isSubmitting}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
             <div className="space-y-1.5">
-              <label htmlFor="client-company" className="block text-xs font-semibold text-[#12263F]">
-                Company <span className="text-[#5E718D] font-normal text-[11px]">(Optional)</span>
+              <label htmlFor="client-name" className="block text-xs font-semibold text-[#12263F]">
+                Client Name <span className="text-[#B42318]">*</span>
               </label>
               <input
-                id="client-company"
+                id="client-name"
                 type="text"
+                required
                 maxLength={100}
-                value={company}
-                onChange={(e) => setCompany(e.target.value)}
-                placeholder="e.g., Acme Industries"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g., Acme Corporation or Jane Smith"
                 disabled={isSubmitting}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors"
               />
             </div>
 
             <div className="space-y-1.5">
-              <label htmlFor="client-phone" className="block text-xs font-semibold text-[#12263F]">
-                Phone <span className="text-[#5E718D] font-normal text-[11px]">(Optional)</span>
+              <label htmlFor="client-email" className="block text-xs font-semibold text-[#12263F]">
+                Billing Email <span className="text-[#B42318]">*</span>
               </label>
               <input
-                id="client-phone"
-                type="tel"
-                maxLength={50}
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="e.g., +1 (555) 0199"
+                id="client-email"
+                type="email"
+                required
+                maxLength={255}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="e.g., billing@acme.com"
                 disabled={isSubmitting}
                 className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors"
               />
             </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="space-y-1.5">
+                <label htmlFor="client-company" className="block text-xs font-semibold text-[#12263F]">
+                  Company <span className="text-[#5E718D] font-normal text-[11px]">(Optional)</span>
+                </label>
+                <input
+                  id="client-company"
+                  type="text"
+                  maxLength={100}
+                  value={company}
+                  onChange={(e) => setCompany(e.target.value)}
+                  placeholder="e.g., Acme Industries"
+                  disabled={isSubmitting}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label htmlFor="client-phone" className="block text-xs font-semibold text-[#12263F]">
+                  Phone <span className="text-[#5E718D] font-normal text-[11px]">(Optional)</span>
+                </label>
+                <input
+                  id="client-phone"
+                  type="tel"
+                  maxLength={50}
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="e.g., +1 (555) 0199"
+                  disabled={isSubmitting}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="client-notes" className="block text-xs font-semibold text-[#12263F]">
+                Internal Notes <span className="text-[#5E718D] font-normal text-[11px]">(Optional)</span>
+              </label>
+              <textarea
+                id="client-notes"
+                rows={3}
+                maxLength={1000}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Private workspace notes (payment terms, PO contact, etc.)"
+                disabled={isSubmitting}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors leading-relaxed"
+              />
+            </div>
           </div>
 
-          <div className="space-y-1.5">
-            <label htmlFor="client-notes" className="block text-xs font-semibold text-[#12263F]">
-              Internal Notes <span className="text-[#5E718D] font-normal text-[11px]">(Optional)</span>
-            </label>
-            <textarea
-              id="client-notes"
-              rows={3}
-              maxLength={1000}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Private workspace notes (payment terms, PO contact, etc.)"
-              disabled={isSubmitting}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-[#E3E8EF] text-xs sm:text-sm bg-[#F6F5F1]/30 placeholder:text-[#8A9BA8] focus:border-[#0C7C61] focus:ring-1 focus:ring-[#0C7C61] focus:outline-hidden disabled:opacity-60 transition-colors leading-relaxed"
-            />
-          </div>
-
-          {/* Modal Actions */}
-          <div className="pt-3 border-t border-[#EEF2F6] flex flex-col-reverse sm:flex-row items-center justify-end gap-2.5">
+          {/* Pinned Modal Actions Footer */}
+          <div className="p-4 sm:px-6 sm:py-4 bg-[#FAF9F5] border-t border-[#EEF2F6] shrink-0 flex flex-col-reverse sm:flex-row items-center justify-end gap-2.5">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-[#E3E8EF] hover:bg-[#F6F5F1] text-xs font-semibold text-[#5E718D] hover:text-[#12263F] transition-colors disabled:opacity-50 min-h-[44px]"
+              className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-[#E3E8EF] bg-white hover:bg-[#F6F5F1] text-xs font-semibold text-[#5E718D] hover:text-[#12263F] transition-colors disabled:opacity-50 min-h-[44px]"
             >
               Cancel
             </button>

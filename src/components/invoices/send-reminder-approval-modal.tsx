@@ -143,149 +143,154 @@ export function SendReminderApprovalModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="reminder-approval-title"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45 backdrop-blur-xs animate-in fade-in duration-150 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/45 backdrop-blur-xs animate-in fade-in duration-150"
     >
-      <div className="relative w-full max-w-xl my-8 rounded-2xl bg-white border-2 border-[#0F6CBD] shadow-2xl p-6 sm:p-8 space-y-6 text-[#12263F] animate-in zoom-in-95 duration-150">
-        {/* Close Button */}
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={isProcessing}
-          aria-label="Close reminder modal"
-          className="absolute top-5 right-5 p-2 rounded-xl text-[#5E718D] hover:text-[#12263F] hover:bg-[#F6F5F1] transition-colors disabled:opacity-50 min-h-[44px] min-w-[44px] flex items-center justify-center focus-visible:ring-2 focus-visible:ring-[#0F6CBD] focus-visible:outline-hidden"
-        >
-          <X className="w-5 h-5" aria-hidden="true" />
-        </button>
-
-        {/* Header with Lock Indicator & Consequential Action Badge */}
-        <div className="flex items-start gap-3.5 pr-8">
-          <div className="p-3 rounded-xl bg-[#EFF6FC] text-[#0F6CBD] border border-[#C7E0F4] shrink-0">
-            <Lock className="w-6 h-6 stroke-[2.5]" aria-hidden="true" />
-          </div>
-
-          <div className="space-y-1">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0F6CBD] bg-[#EFF6FC] border border-[#C7E0F4]">
-              <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
-              <span>Human Approval Gate · Consequential Action</span>
-            </div>
-            <h2
-              id="reminder-approval-title"
-              className="font-headline font-bold text-xl sm:text-2xl text-[#12263F]"
-            >
-              Approve Payment Reminder
-            </h2>
-            <p className="text-xs text-[#5E718D] leading-relaxed">
-              This action dispatches an official payment reminder notification to the recipient through PayPal Sandbox. This sends a reminder notice, not a new invoice.
-            </p>
-          </div>
-        </div>
-
-        {/* Error Notice */}
-        {error && (
-          <div
-            role="alert"
-            className="p-4 rounded-xl bg-[#FEF3F2] border border-[#FECDCA] text-[#B42318] text-xs flex items-start gap-2.5 animate-in fade-in"
-          >
-            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-            <div className="space-y-0.5 flex-1">
-              <p className="font-semibold">Unable to complete reminder</p>
-              <p>{error}</p>
-            </div>
-          </div>
-        )}
-
-        {/* Material Summary Review Card */}
-        <div className="rounded-xl bg-[#F6F5F1]/80 border border-[#E3E8EF] p-4 text-xs space-y-2.5">
-          <h3 className="font-semibold text-[11px] uppercase tracking-wider text-[#5E718D]">
-            Material Invoice Summary
-          </h3>
-
-          <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
-            <span className="text-[#5E718D]">Invoice Identifier:</span>
-            <span className="font-mono font-semibold text-[#12263F]">
-              {invoice.number ?? invoice.id.slice(0, 10)}
-            </span>
-          </div>
-
-          <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
-            <span className="text-[#5E718D]">Recipient:</span>
-            <span className="font-medium text-[#12263F] truncate max-w-[240px]">
-              {invoice.client.name} &lt;{invoice.client.email}&gt;
-            </span>
-          </div>
-
-          <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
-            <span className="text-[#5E718D]">Current Status:</span>
-            <span className="font-mono font-semibold text-[#0F6CBD]">
-              {invoice.cashpilotStatus}
-            </span>
-          </div>
-
-          <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
-            <span className="text-[#5E718D]">Due Date:</span>
-            <span className="font-mono font-medium text-[#12263F]">
-              {new Date(invoice.dueDate).toLocaleDateString()}
-            </span>
-          </div>
-
-          <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
-            <span className="text-[#5E718D]">PayPal Invoice ID:</span>
-            <span className="font-mono text-[11px] font-semibold text-[#12263F]">
-              {invoice.paypalInvoiceId ?? "None"}
-            </span>
-          </div>
-
-          <div className="flex justify-between py-1 border-b border-[#EEF2F6] font-semibold text-[#12263F]">
-            <span>Outstanding Balance:</span>
-            <span className="font-mono tabular-nums text-sm text-[#0C7C61]">
-              {formattedTotal}
-            </span>
-          </div>
-
-          {/* Reminder Content Preview */}
-          <div className="pt-1.5 space-y-1.5">
-            <span className="text-[11px] font-semibold text-[#5E718D] uppercase tracking-wider">
-              Reminder Content Preview
-            </span>
-            <div className="p-2.5 rounded-lg bg-white border border-[#E3E8EF] space-y-1">
-              <p className="text-[11px] font-medium text-[#12263F]">
-                <span className="text-[#5E718D]">Subject: </span>
-                {defaultSubject}
-              </p>
-              <p className="text-[11px] text-[#5E718D] italic">
-                <span className="not-italic text-[#5E718D]">Note: </span>
-                &ldquo;{defaultNote}&rdquo;
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Cryptographic Hash Binding Callout */}
-        <div className="p-3.5 rounded-xl bg-[#EFF6FC]/80 border border-[#C7E0F4] text-[11px] text-[#0F6CBD] space-y-1">
-          <div className="flex items-center gap-1.5 font-semibold">
-            <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-            <span>Cryptographic Material Hash Lock</span>
-          </div>
-          <p className="text-[10px] text-[#12263F]/80 leading-relaxed">
-            Approval locks recipient, outstanding amount, dates, and invoice identity to this exact SHA-256 hash. If anything changes, approval is automatically invalidated.
-          </p>
-          <div className="font-mono text-[10px] bg-white p-2 rounded border border-[#C7E0F4] text-[#12263F] break-all select-all font-semibold">
-            {materialPayloadHash}
-          </div>
-        </div>
-
-        {/* Financial Invariant Reminder */}
-        <p className="text-[10px] text-[#5E718D] italic leading-tight">
-          Financial Truth: A reminder is purely a notification. It does not alter invoice status, record payment, or modify amounts. Only verified PayPal evidence can mark an invoice as Paid.
-        </p>
-
-        {/* Action Controls */}
-        <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-3 pt-2 border-t border-[#E3E8EF]">
+      <div className="relative w-full max-w-xl max-h-[calc(100vh-2rem)] flex flex-col rounded-2xl bg-white border-2 border-[#0F6CBD] shadow-2xl text-[#12263F] animate-in zoom-in-95 duration-150 overflow-hidden">
+        {/* Pinned Header with Lock Indicator & Consequential Action Badge */}
+        <div className="p-5 sm:p-6 pb-4 border-b border-[#EEF2F6] shrink-0 pr-14 relative bg-[#EFF6FC]/30">
+          {/* Close Button */}
           <button
             type="button"
             onClick={onClose}
             disabled={isProcessing}
-            className="w-full sm:w-auto px-4 py-2.5 min-h-[44px] rounded-xl border border-[#E3E8EF] text-xs font-semibold text-[#12263F] hover:bg-[#F6F5F1] transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-[#0F6CBD] focus-visible:outline-hidden"
+            aria-label="Close reminder modal"
+            className="absolute top-4 right-4 p-2 rounded-xl text-[#5E718D] hover:text-[#12263F] hover:bg-white/80 transition-colors disabled:opacity-50 min-h-[44px] min-w-[44px] flex items-center justify-center focus-visible:ring-2 focus-visible:ring-[#0F6CBD] focus-visible:outline-hidden"
+          >
+            <X className="w-5 h-5" aria-hidden="true" />
+          </button>
+
+          <div className="flex items-start gap-3.5">
+            <div className="p-3 rounded-xl bg-[#EFF6FC] text-[#0F6CBD] border border-[#C7E0F4] shrink-0">
+              <Lock className="w-6 h-6 stroke-[2.5]" aria-hidden="true" />
+            </div>
+
+            <div className="space-y-1">
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-semibold uppercase tracking-wider text-[#0F6CBD] bg-[#EFF6FC] border border-[#C7E0F4]">
+                <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+                <span>Human Approval Gate · Consequential Action</span>
+              </div>
+              <h2
+                id="reminder-approval-title"
+                className="font-headline font-bold text-xl sm:text-2xl text-[#12263F]"
+              >
+                Approve Payment Reminder
+              </h2>
+              <p className="text-xs text-[#5E718D] leading-relaxed">
+                This action dispatches an official payment reminder notification to the recipient through PayPal Sandbox. This sends a reminder notice, not a new invoice.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Scrollable Content Body */}
+        <div className="p-5 sm:p-6 space-y-5 overflow-y-auto flex-1 overscroll-contain">
+          {/* Error Notice */}
+          {error && (
+            <div
+              role="alert"
+              className="p-4 rounded-xl bg-[#FEF3F2] border border-[#FECDCA] text-[#B42318] text-xs flex items-start gap-2.5 animate-in fade-in"
+            >
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="space-y-0.5 flex-1">
+                <p className="font-semibold">Unable to complete reminder</p>
+                <p>{error}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Material Summary Review Card */}
+          <div className="rounded-xl bg-[#F6F5F1]/80 border border-[#E3E8EF] p-4 text-xs space-y-2.5">
+            <h3 className="font-semibold text-[11px] uppercase tracking-wider text-[#5E718D]">
+              Material Invoice Summary
+            </h3>
+
+            <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+              <span className="text-[#5E718D]">Invoice Identifier:</span>
+              <span className="font-mono font-semibold text-[#12263F]">
+                {invoice.number ?? invoice.id.slice(0, 10)}
+              </span>
+            </div>
+
+            <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+              <span className="text-[#5E718D]">Recipient:</span>
+              <span className="font-medium text-[#12263F] truncate max-w-[240px]">
+                {invoice.client.name} &lt;{invoice.client.email}&gt;
+              </span>
+            </div>
+
+            <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+              <span className="text-[#5E718D]">Current Status:</span>
+              <span className="font-mono font-semibold text-[#0F6CBD]">
+                {invoice.cashpilotStatus}
+              </span>
+            </div>
+
+            <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+              <span className="text-[#5E718D]">Due Date:</span>
+              <span className="font-mono font-medium text-[#12263F]">
+                {new Date(invoice.dueDate).toLocaleDateString()}
+              </span>
+            </div>
+
+            <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+              <span className="text-[#5E718D]">PayPal Invoice ID:</span>
+              <span className="font-mono text-[11px] font-semibold text-[#12263F]">
+                {invoice.paypalInvoiceId ?? "None"}
+              </span>
+            </div>
+
+            <div className="flex justify-between py-1 border-b border-[#EEF2F6] font-semibold text-[#12263F]">
+              <span>Outstanding Balance:</span>
+              <span className="font-mono tabular-nums text-sm text-[#0C7C61]">
+                {formattedTotal}
+              </span>
+            </div>
+
+            {/* Reminder Content Preview */}
+            <div className="pt-1.5 space-y-1.5">
+              <span className="text-[11px] font-semibold text-[#5E718D] uppercase tracking-wider">
+                Reminder Content Preview
+              </span>
+              <div className="p-2.5 rounded-lg bg-white border border-[#E3E8EF] space-y-1">
+                <p className="text-[11px] font-medium text-[#12263F]">
+                  <span className="text-[#5E718D]">Subject: </span>
+                  {defaultSubject}
+                </p>
+                <p className="text-[11px] text-[#5E718D] italic">
+                  <span className="not-italic text-[#5E718D]">Note: </span>
+                  &ldquo;{defaultNote}&rdquo;
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Cryptographic Hash Binding Callout */}
+          <div className="p-3.5 rounded-xl bg-[#EFF6FC]/80 border border-[#C7E0F4] text-[11px] text-[#0F6CBD] space-y-1">
+            <div className="flex items-center gap-1.5 font-semibold">
+              <Lock className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Cryptographic Material Hash Lock</span>
+            </div>
+            <p className="text-[10px] text-[#12263F]/80 leading-relaxed">
+              Approval locks recipient, outstanding amount, dates, and invoice identity to this exact SHA-256 hash. If anything changes, approval is automatically invalidated.
+            </p>
+            <div className="font-mono text-[10px] bg-white p-2 rounded border border-[#C7E0F4] text-[#12263F] break-all select-all font-semibold">
+              {materialPayloadHash}
+            </div>
+          </div>
+
+          {/* Financial Invariant Reminder */}
+          <p className="text-[10px] text-[#5E718D] italic leading-tight">
+            Financial Truth: A reminder is purely a notification. It does not alter invoice status, record payment, or modify amounts. Only verified PayPal evidence can mark an invoice as Paid.
+          </p>
+        </div>
+
+        {/* Pinned Action Controls Footer */}
+        <div className="p-4 sm:px-6 sm:py-4 bg-[#FAF9F5] border-t border-[#E3E8EF] shrink-0 flex flex-col-reverse sm:flex-row items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isProcessing}
+            className="w-full sm:w-auto px-4 py-2.5 min-h-[44px] rounded-xl border border-[#E3E8EF] bg-white text-xs font-semibold text-[#12263F] hover:bg-[#F6F5F1] transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-[#0F6CBD] focus-visible:outline-hidden"
           >
             Back to invoice
           </button>
