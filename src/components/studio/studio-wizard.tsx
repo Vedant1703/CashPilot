@@ -413,6 +413,7 @@ export function StudioWizard({ knownClients, initialInvoice, initialPrompt }: St
           extractionSource={extractionSource}
           modelName={modelName}
           persistedInvoiceId={persistedInvoice?.id}
+          originalPrompt={savedPrompt}
           onBack={() => setCurrentStep("DESCRIBE")}
           onDraftSaved={handleDraftSaved}
           onSaveOnly={handleSaveOnly}

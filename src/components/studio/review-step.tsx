@@ -43,6 +43,7 @@ interface ReviewStepProps {
   extractionSource?: "ai_model" | "deterministic_rule_based";
   modelName?: string;
   persistedInvoiceId?: string | null;
+  originalPrompt?: string;
   onBack: () => void;
   onDraftSaved: (persistedInvoice: PersistedStudioInvoice, materialPayloadHash: string) => void;
   onSaveOnly?: (persistedInvoice: PersistedStudioInvoice, materialPayloadHash: string) => void;
@@ -56,6 +57,7 @@ export function ReviewStep({
   extractionSource = "deterministic_rule_based",
   modelName,
   persistedInvoiceId,
+  originalPrompt,
   onBack,
   onDraftSaved,
   onSaveOnly,
@@ -327,18 +329,42 @@ export function ReviewStep({
         </div>
       )}
 
-      {/* Provenance Extraction Notice */}
-      <div className="flex items-center gap-2 text-xs text-[#5E718D]">
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-[#F0EEFF] text-[#5B3FD0] border border-[#CDC4FF]">
-          <Sparkles className="w-3 h-3" />
-          <span>
-            {extractionSource === "ai_model"
-              ? `AI Drafted · ${modelName ?? "Gemini"}`
-              : "Deterministic Rule-Based Extraction"}
+      {/* Provenance Extraction Notice & Inspectable Prompt */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 text-xs text-[#5E718D]">
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-[#F0EEFF] text-[#5B3FD0] border border-[#CDC4FF]">
+            <Sparkles className="w-3 h-3" />
+            <span>
+              {extractionSource === "ai_model"
+                ? `AI Drafted · ${modelName ?? "Gemini"}`
+                : "Deterministic Rule-Based Extraction"}
+            </span>
           </span>
-        </span>
-        <span>·</span>
-        <span>Not yet saved to database or PayPal</span>
+          <span>·</span>
+          <span>Not yet saved to database or PayPal</span>
+        </div>
+
+        {originalPrompt && (
+          <details className="rounded-xl border border-[#E3E8EF] bg-[#F8FAFC] p-3 text-xs group transition-all">
+            <summary className="font-semibold text-[#12263F] flex items-center justify-between cursor-pointer list-none select-none">
+              <span className="flex items-center gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-[#5B3FD0]" />
+                <span>Original prompt used</span>
+              </span>
+              <span className="text-[11px] text-[#5E718D] font-normal group-open:hidden">
+                Click to inspect
+              </span>
+              <span className="text-[11px] text-[#5E718D] font-normal hidden group-open:inline">
+                Click to collapse
+              </span>
+            </summary>
+            <div className="mt-2.5 pt-2.5 border-t border-[#EEF2F6]">
+              <p className="text-[#334155] whitespace-pre-wrap font-mono text-[11px] bg-white p-2.5 rounded-lg border border-[#E2E8F0]">
+                {originalPrompt}
+              </p>
+            </div>
+          </details>
+        )}
       </div>
 
       {saveError && (
@@ -376,7 +402,7 @@ export function ReviewStep({
                     className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0C7C61] hover:text-[#09634E] hover:underline transition-colors touch-target"
                   >
                     <Plus className="w-3.5 h-3.5 stroke-[2.5]" aria-hidden="true" />
-                    <span>+ Create new client</span>
+                    <span>Create new client</span>
                   </button>
                 </div>
                 <select

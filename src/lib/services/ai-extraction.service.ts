@@ -293,7 +293,7 @@ export function extractInvoiceDeterministically(
     }
   }
 
-  // 2. Line Items, Quantities & Rates (Support comma amounts like $1,250 and flexible phrasing)
+  // 2. Line Items, Quantities & Rates (Support multi-item extraction, comma amounts like $1,250, and flexible phrasing)
   const lineItems: Array<{
     description: string;
     quantity: number;
@@ -302,86 +302,143 @@ export function extractInvoiceDeterministically(
 
   const priceRegexStr = "\\$?(\\d{1,3}(?:,\\d{3})*(?:\\.\\d{1,2})?|\\d+(?:\\.\\d{1,2})?)";
 
-  // Pattern 1: Hourly / Quantity: "10 hours of system design consulting at $150 per hour" or "5 units at $20 each"
-  const hourlyMatch = inputText.match(
-    new RegExp(
-      "(\\d+)\\s*(?:hours|hrs|items|units|licenses|x)?\\s*(?:of\\s*)?([^,.]+?)\\s*(?:at|@)\\s*" +
-        priceRegexStr +
-        "(?:\\s*(?:\\/|per|each|a)\\s*(?:hour|hr|item|unit|license))?",
-      "i"
-    )
-  );
-
-  // Pattern 2: "Bill TechStart $1,250 for sprint 3 frontend development" or "$1,250 for sprint 3 frontend development"
-  const fixedMatch = inputText.match(
-    new RegExp(
-      "(?:for\\s+|bill\\s+[^$]+?\\s+)?" + priceRegexStr + "\\s+(?:for|towards)\\s+([^,.]+)",
-      "i"
-    )
-  );
-
-  // Pattern 3: "Bill Jane for consulting at $500"
-  const billForAtMatch = inputText.match(
-    new RegExp(
-      "(?:bill|invoice|charge)\\s+[^$]+?\\s+for\\s+([^,.]+?)\\s+(?:at|@)\\s*" + priceRegexStr,
-      "i"
-    )
-  );
-
-  // Pattern 4: "for consulting at $500"
-  const forAtMatch = inputText.match(
-    new RegExp("(?:for\\s+)([^,.]+?)\\s+(?:at|@)\\s*" + priceRegexStr, "i")
-  );
-
-  if (hourlyMatch) {
-    const qty = parseInt(hourlyMatch[1], 10);
-    const desc = hourlyMatch[2].trim() || "Consulting Services";
-    const cleanPrice = hourlyMatch[3].replace(/,/g, "");
-    const price = parseFloat(cleanPrice).toFixed(2);
-    lineItems.push({
-      description: desc.charAt(0).toUpperCase() + desc.slice(1),
-      quantity: Math.max(qty, 1),
-      unitPriceDecimal: price,
-    });
-  } else if (fixedMatch && fixedMatch[2]?.trim()) {
-    const cleanPrice = fixedMatch[1].replace(/,/g, "");
-    const price = parseFloat(cleanPrice).toFixed(2);
-    const desc = fixedMatch[2].trim();
-    lineItems.push({
-      description: desc.charAt(0).toUpperCase() + desc.slice(1),
-      quantity: 1,
-      unitPriceDecimal: price,
-    });
-  } else if (billForAtMatch && billForAtMatch[1]?.trim()) {
-    const cleanPrice = billForAtMatch[2].replace(/,/g, "");
-    const price = parseFloat(cleanPrice).toFixed(2);
-    const desc = billForAtMatch[1].trim();
-    lineItems.push({
-      description: desc.charAt(0).toUpperCase() + desc.slice(1),
-      quantity: 1,
-      unitPriceDecimal: price,
-    });
-  } else if (forAtMatch && forAtMatch[1]?.trim()) {
-    const cleanPrice = forAtMatch[2].replace(/,/g, "");
-    const price = parseFloat(cleanPrice).toFixed(2);
-    const desc = forAtMatch[1].trim();
-    lineItems.push({
-      description: desc.charAt(0).toUpperCase() + desc.slice(1),
-      quantity: 1,
-      unitPriceDecimal: price,
-    });
-  } else {
-    // Generic fallback line item with standalone dollar amount
-    const priceMatch = inputText.match(/\$(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/);
-    if (priceMatch) {
-      const cleanPrice = priceMatch[1].replace(/,/g, "");
+  // Strategy A: Parenthesized items: "Website redesign (10 hours at USD 150/hour), UI revisions (5 hours at USD 80/hour)"
+  const parenRegex =
+    /([A-Za-z0-9\s&./_-]+?)\s*\(\s*(\d+)\s*(?:hours|hrs|items|units|licenses|x)?\s*(?:at|@|for)?\s*(?:USD|\$)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)\s*(?:\/|\s*per|\s*each|\s*a)?\s*(?:hour|hr|item|unit|license)?\s*\)/gi;
+  let pMatch: RegExpExecArray | null;
+  while ((pMatch = parenRegex.exec(inputText)) !== null) {
+    let desc = pMatch[1].trim();
+    desc = desc.replace(
+      /^(?:create\s+an?\s+invoice\s+for|invoice\s+for|bill\s+to|bill|invoice)\s+[^:]+:\s*/i,
+      ""
+    );
+    desc = desc.replace(/^[\s,;:-]+/, "").trim();
+    if (desc && !/^(?:net|tax|due)/i.test(desc)) {
       lineItems.push({
-        description: "Professional Services",
+        description: desc.charAt(0).toUpperCase() + desc.slice(1),
+        quantity: Math.max(parseInt(pMatch[2], 10), 1),
+        unitPriceDecimal: parseFloat(pMatch[3].replace(/,/g, "")).toFixed(2),
+      });
+    }
+  }
+
+  // Strategy B: Colon / bullet format: "Website redesign: 10 hours at USD 150/hour"
+  if (lineItems.length === 0) {
+    const colonRegex =
+      /([A-Za-z0-9\s&./_-]+?)\s*:\s*(\d+)\s*(?:hours|hrs|items|units|licenses|x)?\s*(?:at|@)\s*(?:USD|\$)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(?:\s*(?:\/|per|each|a)\s*(?:hour|hr|item|unit|license))?/gi;
+    let cMatch: RegExpExecArray | null;
+    while ((cMatch = colonRegex.exec(inputText)) !== null) {
+      let desc = cMatch[1].trim().replace(/^[\s,;:-]+/, "").trim();
+      if (desc && !/^(?:net|tax|due)/i.test(desc)) {
+        lineItems.push({
+          description: desc.charAt(0).toUpperCase() + desc.slice(1),
+          quantity: Math.max(parseInt(cMatch[2], 10), 1),
+          unitPriceDecimal: parseFloat(cMatch[3].replace(/,/g, "")).toFixed(2),
+        });
+      }
+    }
+  }
+
+  // Strategy C: Multi qty-first items: "10 hours of website redesign at USD 150/hour, 5 hours of UI revisions at USD 80/hour"
+  if (lineItems.length === 0) {
+    const qtyFirstRegex =
+      /(\d+)\s*(?:hours|hrs|items|units|licenses|x)?\s*(?:of\s*)?([^,.:\n]+?)\s*(?:at|@)\s*(?:USD|\$)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)(?:\s*(?:\/|per|each|a)\s*(?:hour|hr|item|unit|license))?/gi;
+    const qMatches: typeof lineItems = [];
+    let qMatch: RegExpExecArray | null;
+    while ((qMatch = qtyFirstRegex.exec(inputText)) !== null) {
+      let desc = qMatch[2].trim().replace(/^[\s,;:-]+|and\s+/i, "").trim();
+      if (desc && !/^(?:net|tax|due)/i.test(desc)) {
+        qMatches.push({
+          description: desc.charAt(0).toUpperCase() + desc.slice(1),
+          quantity: Math.max(parseInt(qMatch[1], 10), 1),
+          unitPriceDecimal: parseFloat(qMatch[3].replace(/,/g, "")).toFixed(2),
+        });
+      }
+    }
+    if (qMatches.length > 1) {
+      lineItems.push(...qMatches);
+    }
+  }
+
+  // Strategy D: Single-item patterns (if no multi-item patterns matched)
+  if (lineItems.length === 0) {
+    const hourlyMatch = inputText.match(
+      new RegExp(
+        "(\\d+)\\s*(?:hours|hrs|items|units|licenses|x)?\\s*(?:of\\s*)?([^,.]+?)\\s*(?:at|@)\\s*" +
+          priceRegexStr +
+          "(?:\\s*(?:\\/|per|each|a)\\s*(?:hour|hr|item|unit|license))?",
+        "i"
+      )
+    );
+
+    const fixedMatch = inputText.match(
+      new RegExp(
+        "(?:for\\s+|bill\\s+[^$]+?\\s+)?" + priceRegexStr + "\\s+(?:for|towards)\\s+([^,.]+)",
+        "i"
+      )
+    );
+
+    const billForAtMatch = inputText.match(
+      new RegExp(
+        "(?:bill|invoice|charge)\\s+[^$]+?\\s+for\\s+([^,.]+?)\\s+(?:at|@)\\s*" + priceRegexStr,
+        "i"
+      )
+    );
+
+    const forAtMatch = inputText.match(
+      new RegExp("(?:for\\s+)([^,.]+?)\\s+(?:at|@)\\s*" + priceRegexStr, "i")
+    );
+
+    if (hourlyMatch) {
+      const qty = parseInt(hourlyMatch[1], 10);
+      const desc = hourlyMatch[2].trim() || "Consulting Services";
+      const cleanPrice = hourlyMatch[3].replace(/,/g, "");
+      const price = parseFloat(cleanPrice).toFixed(2);
+      lineItems.push({
+        description: desc.charAt(0).toUpperCase() + desc.slice(1),
+        quantity: Math.max(qty, 1),
+        unitPriceDecimal: price,
+      });
+    } else if (fixedMatch && fixedMatch[2]?.trim()) {
+      const cleanPrice = fixedMatch[1].replace(/,/g, "");
+      const price = parseFloat(cleanPrice).toFixed(2);
+      const desc = fixedMatch[2].trim();
+      lineItems.push({
+        description: desc.charAt(0).toUpperCase() + desc.slice(1),
         quantity: 1,
-        unitPriceDecimal: parseFloat(cleanPrice).toFixed(2),
+        unitPriceDecimal: price,
+      });
+    } else if (billForAtMatch && billForAtMatch[1]?.trim()) {
+      const cleanPrice = billForAtMatch[2].replace(/,/g, "");
+      const price = parseFloat(cleanPrice).toFixed(2);
+      const desc = billForAtMatch[1].trim();
+      lineItems.push({
+        description: desc.charAt(0).toUpperCase() + desc.slice(1),
+        quantity: 1,
+        unitPriceDecimal: price,
+      });
+    } else if (forAtMatch && forAtMatch[1]?.trim()) {
+      const cleanPrice = forAtMatch[2].replace(/,/g, "");
+      const price = parseFloat(cleanPrice).toFixed(2);
+      const desc = forAtMatch[1].trim();
+      lineItems.push({
+        description: desc.charAt(0).toUpperCase() + desc.slice(1),
+        quantity: 1,
+        unitPriceDecimal: price,
       });
     } else {
-      missingFields.push("lineItems");
+      // Generic fallback line item with standalone dollar amount
+      const priceMatch = inputText.match(/\$(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?)/);
+      if (priceMatch) {
+        const cleanPrice = priceMatch[1].replace(/,/g, "");
+        lineItems.push({
+          description: "Professional Services",
+          quantity: 1,
+          unitPriceDecimal: parseFloat(cleanPrice).toFixed(2),
+        });
+      } else {
+        missingFields.push("lineItems");
+      }
     }
   }
 
@@ -420,8 +477,12 @@ export function extractInvoiceDeterministically(
   let terms: string | undefined;
   const now = new Date();
 
-  // Check for "net 14" / "net 30" / "due in X days"
-  const netMatch = text.match(/net\s*(\d+)/i) || text.match(/due\s+in\s+(\d+)\s+days?/i);
+  // Check for "net 14" / "net 30" / "payment due in 14 days" / "due in X days"
+  const netMatch =
+    text.match(/(?:payment\s+)?due\s+(?:in|within)\s+(\d+)\s+days?/i) ||
+    text.match(/net\s*(\d+)/i) ||
+    text.match(/payable\s+within\s+(\d+)\s+days?/i) ||
+    text.match(/terms(?:\s*of)?\s*[:\-]?\s*(\d+)\s*days?/i);
   if (netMatch) {
     const days = parseInt(netMatch[1], 10);
     const d = new Date(now.getTime() + days * 86400000);
@@ -463,10 +524,15 @@ export function extractInvoiceDeterministically(
     title = `${clientName} Services`;
   }
 
-  let notes = `Drafted from request: "${inputText.substring(0, 100)}${inputText.length > 100 ? "..." : ""}"`;
-  const noteMatch = inputText.match(/(?:note|memo|po\s*#?|po):\s*([^,.\n]+)/i);
-  if (noteMatch && noteMatch[1]?.trim()) {
-    notes = noteMatch[1].trim();
+  let notes = `Drafted from request: "${inputText}"`;
+  const customNoteMatch = inputText.match(/(?:note|memo|po\s*#?|po):\s*["']?([^"'\n]+)["']?/i);
+  const thankYouMatch = inputText.match(
+    /(?:with|and|include|add)?\s*(?:a\s+)?(?:professional|friendly|warm|polite)?\s*thank(?:s|\s*-\s*you|\s+you)\s*note/i
+  );
+  if (customNoteMatch && customNoteMatch[1]?.trim()) {
+    notes = customNoteMatch[1].trim();
+  } else if (thankYouMatch) {
+    notes = "Thank you for your business. We appreciate the opportunity to work with you!";
   }
 
   const draft: AiInvoiceDraft = {
@@ -584,6 +650,9 @@ CRITICAL RULES:
    - Do NOT invent fictional line items, clients, or fake services for non-billing requests.
 2. Grounded Extraction:
    - If "isInvoiceIntent" is true, match client to Known Clients if possible.
+   - Extract ALL individual line items mentioned in the request. Do NOT combine multiple line items into one. Every distinct deliverable, service, or hourly task must be its own object in "lineItems" with exact description, quantity, and unitPriceDecimal.
+   - If the user requests a thank-you note or custom message (e.g. "with a professional thank-you note", "friendly thank-you note"), put a complete, courteous customer-facing message in "notes". Do NOT truncate with ellipsis ("...").
+   - Calculate "dueDate" based on payment terms if specified (e.g. 14 days from today's date ${new Date().toISOString().substring(0, 10)}).
    - Never guess or fabricate missing email addresses or dates. Flag them in "missingFields".
    - Authoritative totals will be calculated by the server, not you.
 3. Return raw JSON only.`;
