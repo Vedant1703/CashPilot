@@ -79,6 +79,12 @@ export interface PayPalInvoiceResponse {
   detail: {
     invoice_number?: string;
     currency_code: string;
+    metadata?: {
+      recipient_view_url?: string;
+      invoicer_view_url?: string;
+      create_time?: string;
+      last_update_time?: string;
+    };
   };
   amount?: {
     currency_code: string;
@@ -153,6 +159,91 @@ export function formatPayPalErrorMessage(
   }
 
   return baseMessage;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Payer View Link Extraction & Verification
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Validate that a URL is a genuine HTTPS PayPal URL.
+ * Safety requirement: Never invent or accept unauthorized external URLs.
+ */
+export function isValidPayPalUrl(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "https:") return false;
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === "www.sandbox.paypal.com" ||
+      hostname === "sandbox.paypal.com" ||
+      hostname === "www.paypal.com" ||
+      hostname === "paypal.com"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Safely extract the PayPal payer-view URL from a provider response payload.
+ *
+ * Checks:
+ *   1. Single link response: { href: "...", rel: "payer-view" } (returned by POST .../send)
+ *   2. Links array: { links: [ { href: "...", rel: "payer-view" } ] }
+ *   3. Metadata URL: detail.metadata.recipient_view_url (returned by GET .../invoices/{id})
+ *
+ * Safety requirements:
+ *   - Strictly validates that the URL is a valid HTTPS PayPal URL.
+ *   - Never invents a payer URL.
+ *   - Returns null if missing or invalid.
+ */
+export function extractPayerViewUrl(responseData: unknown): string | null {
+  if (!responseData || typeof responseData !== "object") return null;
+
+  const data = responseData as Record<string, unknown>;
+
+  // Case 1: Single HATEOAS link object directly returned by POST .../send
+  if (
+    typeof data.href === "string" &&
+    (data.rel === "payer-view" || data.rel === "payer_view")
+  ) {
+    return isValidPayPalUrl(data.href) ? data.href : null;
+  }
+
+  // Case 2: Links array
+  if (Array.isArray(data.links)) {
+    const link = data.links.find(
+      (l) =>
+        l &&
+        typeof l === "object" &&
+        ("rel" in l) &&
+        (l.rel === "payer-view" || l.rel === "payer_view") &&
+        ("href" in l) &&
+        typeof l.href === "string"
+    );
+    if (link && typeof link.href === "string" && isValidPayPalUrl(link.href)) {
+      return link.href;
+    }
+  }
+
+  // Case 3: detail.metadata.recipient_view_url (from GET /invoices/{id})
+  if (
+    data.detail &&
+    typeof data.detail === "object" &&
+    "metadata" in data.detail &&
+    data.detail.metadata &&
+    typeof data.detail.metadata === "object" &&
+    "recipient_view_url" in data.detail.metadata &&
+    typeof data.detail.metadata.recipient_view_url === "string"
+  ) {
+    const url = data.detail.metadata.recipient_view_url;
+    if (isValidPayPalUrl(url)) {
+      return url;
+    }
+  }
+
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -294,6 +385,7 @@ export async function createPayPalDraftInvoice(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
+    Accept: "application/json",
     Prefer: "return=representation",
   };
 
@@ -352,7 +444,7 @@ export async function createPayPalDraftInvoice(
 export async function sendPayPalInvoice(
   paypalInvoiceId: string,
   requestId?: string
-): Promise<PayPalApiResult<{ sent: true }>> {
+): Promise<PayPalApiResult<{ sent: true; payerViewUrl?: string | null }>> {
   const env = getServerEnv();
   const token = await getPayPalAccessToken();
 
@@ -371,6 +463,7 @@ export async function sendPayPalInvoice(
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
+    Accept: "application/json",
   };
 
   if (requestId) {
@@ -397,9 +490,16 @@ export async function sendPayPalInvoice(
   const { response } = fetchResult;
   const correlationId = response.headers.get("paypal-debug-id") ?? undefined;
 
-  // PayPal returns 202 Accepted, 200 OK, or 204 No Content for successful sends
+  // PayPal returns 200 OK, 202 Accepted, or 204 No Content for successful sends
   if (response.status === 202 || response.status === 200 || response.status === 204) {
-    return { success: true, data: { sent: true }, correlationId };
+    let payerViewUrl: string | null = null;
+    try {
+      const responseBody = await response.json().catch(() => null);
+      payerViewUrl = extractPayerViewUrl(responseBody);
+    } catch {
+      payerViewUrl = null;
+    }
+    return { success: true, data: { sent: true, payerViewUrl }, correlationId };
   }
 
   const errorBody = await response.json().catch(() => ({}));
@@ -446,6 +546,7 @@ export async function getPayPalInvoiceStatus(
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      Accept: "application/json",
     },
   });
 

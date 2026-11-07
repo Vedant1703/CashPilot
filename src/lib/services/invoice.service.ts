@@ -30,6 +30,7 @@ import {
   getPayPalInvoiceStatus,
   sendPayPalReminder,
   cancelPayPalInvoice,
+  extractPayerViewUrl,
   type PayPalInvoicePayload,
 } from "@/lib/paypal/adapter";
 import {
@@ -47,6 +48,7 @@ import {
   ActivityEventType,
   ActorType,
   Prisma,
+  PaymentProvenance,
 } from "@prisma/client";
 import { createHash } from "crypto";
 import {
@@ -54,6 +56,7 @@ import {
   groupInvoicesForCollections,
   type InvoiceRecord,
 } from "@/lib/dashboard/metrics";
+import { DEMO_WORKSPACE_ID } from "@/lib/services/demo.service";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Result types
@@ -203,8 +206,14 @@ export async function getInvoice(invoiceId: string, workspaceId: string) {
         cashpilotStatus: invoice.cashpilotStatus,
         paypalInvoiceId: invoice.paypalInvoiceId,
         paypalStatus: invoice.paypalStatus,
+        paypalPayerViewUrl: invoice.paypalPayerViewUrl,
         lastSyncAt: invoice.lastSyncAt,
         syncIsStale: invoice.syncIsStale,
+        paymentProvenance: invoice.paymentProvenance,
+        simulatedPaymentAt: invoice.simulatedPaymentAt,
+        simulatedAmountMinorUnits: invoice.simulatedAmountMinorUnits,
+        simulatedActorId: invoice.simulatedActorId,
+        simulatedRef: invoice.simulatedRef,
         isDemoData: invoice.isDemoData,
         aiDraftId: invoice.aiDraftId,
         createdAt: invoice.createdAt,
@@ -334,7 +343,7 @@ export async function createInvoice(
         invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : new Date(),
         dueDate: new Date(data.dueDate + "T00:00:00Z"),
         cashpilotStatus: CashPilotStatus.DRAFT,
-        isDemoData: client.isDemo,
+        isDemoData: workspaceId === DEMO_WORKSPACE_ID && client.isDemo,
       },
       include: {
         client: true,
@@ -401,8 +410,14 @@ export async function createInvoice(
         cashpilotStatus: invoice.cashpilotStatus,
         paypalInvoiceId: invoice.paypalInvoiceId,
         paypalStatus: invoice.paypalStatus,
+        paypalPayerViewUrl: invoice.paypalPayerViewUrl,
         lastSyncAt: invoice.lastSyncAt,
         syncIsStale: invoice.syncIsStale,
+        paymentProvenance: invoice.paymentProvenance,
+        simulatedPaymentAt: invoice.simulatedPaymentAt,
+        simulatedAmountMinorUnits: invoice.simulatedAmountMinorUnits,
+        simulatedActorId: invoice.simulatedActorId,
+        simulatedRef: invoice.simulatedRef,
         isDemoData: invoice.isDemoData,
         aiDraftId: invoice.aiDraftId,
         createdAt: invoice.createdAt,
@@ -715,8 +730,14 @@ export async function updateInvoiceDraft(
         cashpilotStatus: updatedInvoice.cashpilotStatus,
         paypalInvoiceId: updatedInvoice.paypalInvoiceId,
         paypalStatus: updatedInvoice.paypalStatus,
+        paypalPayerViewUrl: updatedInvoice.paypalPayerViewUrl,
         lastSyncAt: updatedInvoice.lastSyncAt,
         syncIsStale: updatedInvoice.syncIsStale,
+        paymentProvenance: updatedInvoice.paymentProvenance,
+        simulatedPaymentAt: updatedInvoice.simulatedPaymentAt,
+        simulatedAmountMinorUnits: updatedInvoice.simulatedAmountMinorUnits,
+        simulatedActorId: updatedInvoice.simulatedActorId,
+        simulatedRef: updatedInvoice.simulatedRef,
         isDemoData: updatedInvoice.isDemoData,
         aiDraftId: updatedInvoice.aiDraftId,
         createdAt: updatedInvoice.createdAt,
@@ -1020,6 +1041,9 @@ export async function approveInvoice(
 
   // 5. Execute approval creation transactionally with idempotency & concurrency protection
   return db.$transaction(async (tx) => {
+    // Row-level lock on Invoice to prevent concurrent race conditions
+    await tx.$executeRaw`SELECT id FROM "Invoice" WHERE id = ${invoiceId} FOR UPDATE`;
+
     // Check if an identical active approval already exists for this exact hash
     const existing = await tx.approval.findFirst({
       where: {
@@ -1454,6 +1478,7 @@ export interface SendInvoiceResult {
   paypalInvoiceId: string;
   paypalStatus: string;
   cashpilotStatus: CashPilotStatus;
+  paypalPayerViewUrl?: string | null;
   isAlreadySent: boolean;
   sentAt: Date;
   correlationId?: string;
@@ -1812,13 +1837,17 @@ export async function sendInvoice(
         },
       });
 
+      // Provider payerViewUrl extracted from provider send response
+      const payerViewUrl = sendResult.data.payerViewUrl ?? null;
+
       // Update invoice status — NEVER transition to PAID on send
       await tx.invoice.update({
         where: { id: invoice.id },
         data: {
           cashpilotStatus: dueDateMapped.cashpilotStatus,
           paypalStatus: "SENT",
-          paypalStatusRaw: { status: "SENT", sentAt: now.toISOString() },
+          paypalStatusRaw: { status: "SENT", sentAt: now.toISOString(), payerViewUrl },
+          paypalPayerViewUrl: payerViewUrl,
           lastSyncAt: now,
           syncIsStale: false,
         },
@@ -1895,6 +1924,7 @@ export async function sendInvoice(
       paypalInvoiceId: invoice.paypalInvoiceId,
       paypalStatus: "SENT",
       cashpilotStatus: dueDateMapped.cashpilotStatus,
+      paypalPayerViewUrl: sendResult.data.payerViewUrl ?? null,
       isAlreadySent: false,
       sentAt: now,
       correlationId: sendResult.correlationId,
@@ -3107,6 +3137,8 @@ export interface SyncInvoiceResult {
   reconciledOperationsCount: number;
   lastSyncAt: Date | null;
   correlationId?: string;
+  paypalPayerViewUrl?: string | null;
+  paypalStatusRaw?: Prisma.JsonValue | unknown;
 }
 
 /**
@@ -3149,6 +3181,7 @@ export async function syncInvoiceWithPayPal(
         isStale: false,
         reconciledOperationsCount: 0,
         lastSyncAt: invoice.lastSyncAt,
+        paypalPayerViewUrl: null,
       },
     };
   }
@@ -3240,11 +3273,18 @@ export async function syncInvoiceWithPayPal(
     };
   }
 
+  // Refinement 4: Where provider response supplies an ID, verify it matches the persisted paypalInvoiceId
+  if (statusResult.data.id && statusResult.data.id !== invoice.paypalInvoiceId) {
+    return {
+      ok: false,
+      error: `PayPal response ID mismatch: expected ${invoice.paypalInvoiceId}, received ${statusResult.data.id}. Status rejected for safety.`,
+      code: "PROVIDER_ID_MISMATCH",
+    };
+  }
+
   // 7. Map provider status to CashPilot status using existing tested engine
   const mapped = mapPayPalStatusToCashPilot(rawStatus, invoice.dueDate);
   const newCashpilotStatus = mapped.cashpilotStatus;
-  const statusChanged =
-    previousPaypalStatus !== rawStatus || previousCashpilotStatus !== newCashpilotStatus;
 
   // 8. Find any unknown-outcome operations on this invoice to reconcile
   const unknownOps = await db.externalOperation.findMany({
@@ -3260,6 +3300,27 @@ export async function syncInvoiceWithPayPal(
   // 9. Persist verified status inside a database transaction with optimistic concurrency
   let overwrittenByNewer = false;
 
+  // Financial Safety (Phase 3C Refinement 1): Calculate effective persisted CashPilot status.
+  // If invoice was simulated as paid in demo workspace, a non-PAID PayPal status (e.g. SENT)
+  // must not wipe out the simulated provenance or revert CashPilot status, and must never
+  // convert it into a PayPal-verified payment without actual provider evidence (rawStatus === 'PAID').
+  const isSimulatedPaid = invoice.paymentProvenance === PaymentProvenance.SIMULATED_DEMO_PAYMENT;
+  const hasActualPayPalPaidEvidence = rawStatus === "PAID";
+
+  const effectiveCashpilotStatus =
+    isSimulatedPaid && !hasActualPayPalPaidEvidence
+      ? CashPilotStatus.SIMULATED_PAID
+      : newCashpilotStatus;
+
+  const effectivePaymentProvenance = hasActualPayPalPaidEvidence
+    ? PaymentProvenance.PAYPAL_VERIFIED
+    : isSimulatedPaid
+    ? PaymentProvenance.SIMULATED_DEMO_PAYMENT
+    : invoice.paymentProvenance;
+
+  const effectiveStatusChanged =
+    previousPaypalStatus !== rawStatus || previousCashpilotStatus !== effectiveCashpilotStatus;
+
   await db.$transaction(async (tx) => {
     // Stale response protection: Ensure no newer sync finished while this fetch was in flight
     if (previousLastSyncAt) {
@@ -3273,16 +3334,25 @@ export async function syncInvoiceWithPayPal(
       }
     }
 
+    // Extract payer-view URL if present in provider response
+    const syncedPayerViewUrl = extractPayerViewUrl(statusResult.data);
+
     // Persist verified provider state
+    const invoiceUpdateData: Prisma.InvoiceUpdateInput = {
+      paypalStatus: rawStatus,
+      paypalStatusRaw: statusResult.data as unknown as Prisma.InputJsonValue,
+      cashpilotStatus: effectiveCashpilotStatus,
+      paymentProvenance: effectivePaymentProvenance,
+      lastSyncAt: now,
+      syncIsStale: false,
+    };
+    if (syncedPayerViewUrl) {
+      invoiceUpdateData.paypalPayerViewUrl = syncedPayerViewUrl;
+    }
+
     await tx.invoice.update({
       where: { id: invoiceId },
-      data: {
-        paypalStatus: rawStatus,
-        paypalStatusRaw: statusResult.data as unknown as Prisma.InputJsonValue,
-        cashpilotStatus: newCashpilotStatus,
-        lastSyncAt: now,
-        syncIsStale: false,
-      },
+      data: invoiceUpdateData,
     });
 
     // Update sync operation record
@@ -3340,7 +3410,7 @@ export async function syncInvoiceWithPayPal(
       }
     }
 
-    // Record activity audit event
+    // Record activity audit event with consistent effective CashPilot status
     const eventType =
       unknownOps.length > 0
         ? ActivityEventType.STATUS_SYNC_RECONCILED
@@ -3348,8 +3418,8 @@ export async function syncInvoiceWithPayPal(
 
     const description =
       unknownOps.length > 0
-        ? `Status sync reconciled ${unknownOps.length} uncertain operation(s). PayPal: ${rawStatus} → CashPilot: ${newCashpilotStatus}`
-        : `Status synchronized with PayPal Sandbox. Provider status: ${rawStatus} → CashPilot: ${newCashpilotStatus}`;
+        ? `Status sync reconciled ${unknownOps.length} uncertain operation(s). PayPal: ${rawStatus} → CashPilot: ${effectiveCashpilotStatus}`
+        : `Status synchronized with PayPal Sandbox. Provider status: ${rawStatus} → CashPilot: ${effectiveCashpilotStatus}`;
 
     await tx.activityEvent.create({
       data: {
@@ -3363,10 +3433,10 @@ export async function syncInvoiceWithPayPal(
         metadata: {
           paypalInvoiceId: invoice.paypalInvoiceId,
           providerStatus: rawStatus,
-          cashpilotStatus: newCashpilotStatus,
+          cashpilotStatus: effectiveCashpilotStatus,
           previousPaypalStatus,
           previousCashpilotStatus,
-          statusChanged,
+          statusChanged: effectiveStatusChanged,
           reconciledOperationsCount: unknownOps.length,
           correlationId: statusResult.correlationId,
         },
@@ -3383,12 +3453,14 @@ export async function syncInvoiceWithPayPal(
       previousPaypalStatus,
       currentPaypalStatus: rawStatus,
       previousCashpilotStatus,
-      currentCashpilotStatus: newCashpilotStatus,
-      statusChanged: overwrittenByNewer ? false : statusChanged,
+      currentCashpilotStatus: effectiveCashpilotStatus,
+      statusChanged: overwrittenByNewer ? false : effectiveStatusChanged,
       isStale: false,
       reconciledOperationsCount: unknownOps.length,
       lastSyncAt: now,
       correlationId: statusResult.correlationId,
+      paypalPayerViewUrl: extractPayerViewUrl(statusResult.data) ?? invoice.paypalPayerViewUrl ?? null,
+      paypalStatusRaw: statusResult.data,
     },
   };
 }

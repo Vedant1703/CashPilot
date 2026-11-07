@@ -86,6 +86,16 @@ export function checkSafetyRefusal(userText: string): { isRefusal: boolean; refu
   // Pattern 3: Autonomous sending / deleting without approval
   const autoSend = /\b(send|email|dispatch)\b.*\b(to everyone|all clients|without approval|autonomously)\b/i.test(text);
   const deleteInv = /\b(delete|drop|wipe)\b.*\b(invoice|database|all)\b/i.test(text);
+  // Pattern 4: Autonomous payment simulation
+  const simulatePay = /\b(simulate|fake|mock)\b.*\b(payment|paid)\b/i.test(text);
+
+  if (simulatePay) {
+    return {
+      isRefusal: true,
+      refusalReason:
+        "I cannot simulate payments on my own. Payment simulation in the Demo Workspace requires your explicit human confirmation via the 'Simulate Payment' action on the invoice detail page.",
+    };
+  }
 
   if (markPaid || discount || autoSend || deleteInv) {
     return {
@@ -163,9 +173,10 @@ export async function askNavi(
   // Prioritize Overdue (most days past due first), then Due Soon, then Awaiting Payment
   const unpaidInvoices = invoices.filter(
     (inv) =>
-      inv.cashpilotStatus === CashPilotStatus.OVERDUE ||
-      inv.cashpilotStatus === CashPilotStatus.DUE_SOON ||
-      inv.cashpilotStatus === CashPilotStatus.AWAITING_PAYMENT
+      (inv.cashpilotStatus === CashPilotStatus.OVERDUE ||
+        inv.cashpilotStatus === CashPilotStatus.DUE_SOON ||
+        inv.cashpilotStatus === CashPilotStatus.AWAITING_PAYMENT) &&
+      inv.paymentProvenance !== "SIMULATED_DEMO_PAYMENT"
   );
 
   const sortedByPriority = [...unpaidInvoices].sort((a, b) => {
@@ -301,6 +312,7 @@ Safety & Governance Boundaries:
 
   // Route 2: "Which invoices need attention first?" / Priority ranking query
   const isAttentionQuery =
+    !/\b(paid|settled)\b/i.test(text) &&
     /\b(which invoices?|what invoices?|who should i chase|who to chase|who do i chase|needs? attention|what needs? attention|what should i do first|who to remind first|priority)\b/i.test(text);
 
   if (isAttentionQuery) {
@@ -427,6 +439,8 @@ Safety & Governance Boundaries:
       (inv) =>
         isSameDate(inv.dueDate, now) &&
         inv.cashpilotStatus !== CashPilotStatus.PAID &&
+        inv.cashpilotStatus !== CashPilotStatus.SIMULATED_PAID &&
+        inv.paymentProvenance !== "SIMULATED_DEMO_PAYMENT" &&
         inv.cashpilotStatus !== CashPilotStatus.CANCELLED
     );
     const totalDueToday = dueToday.reduce((sum, i) => sum + i.totalMinorUnits, 0);
@@ -545,33 +559,63 @@ Safety & Governance Boundaries:
     /\b(received payment|received payments|payments received)\b/i.test(text);
 
   if (isPaidQuery) {
-    const paidInvoices = invoices.filter((i) => i.cashpilotStatus === CashPilotStatus.PAID);
-    const totalPaid = paidInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
+    const verifiedPaidInvoices = invoices.filter((i) => i.cashpilotStatus === CashPilotStatus.PAID);
+    const simulatedPaidInvoices = invoices.filter(
+      (i) =>
+        i.paymentProvenance === "SIMULATED_DEMO_PAYMENT" ||
+        i.cashpilotStatus === CashPilotStatus.SIMULATED_PAID
+    );
+    const totalVerifiedPaid = verifiedPaidInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
+    const totalSimulatedPaid = simulatedPaidInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
 
     let content: string;
     const suggestedActions: SuggestedAction[] = [];
 
-    if (paidInvoices.length === 0) {
+    if (verifiedPaidInvoices.length === 0 && simulatedPaidInvoices.length === 0) {
       content = "No invoices are currently marked as paid on record. Payment status requires verified PayPal Sandbox confirmation.";
     } else {
-      const lines = paidInvoices.map((inv) => {
-        const amt = formatMoney(inv.totalMinorUnits, inv.currency);
-        const dueFormatted = new Date(inv.dueDate).toLocaleDateString("en-US", {
-          month: "short",
-          day: "numeric",
-          year: "numeric",
+      const sections: string[] = [];
+
+      if (verifiedPaidInvoices.length > 0) {
+        const lines = verifiedPaidInvoices.map((inv) => {
+          const amt = formatMoney(inv.totalMinorUnits, inv.currency);
+          const dueFormatted = new Date(inv.dueDate).toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year: "numeric",
+          });
+          const paypalText = inv.paypalStatus ? `${inv.paypalStatus} (PayPal confirmed)` : "PayPal: confirmed";
+          return `• ${inv.client.name} — ${inv.number ?? "Draft"}: ${amt} | ${paypalText} | Due date was ${dueFormatted}`;
         });
-        const paypalText = inv.paypalStatus ? `${inv.paypalStatus} (PayPal confirmed)` : "PayPal: confirmed";
-        return `• ${inv.client.name} — ${inv.number ?? "Draft"}: ${amt} | ${paypalText} | Due date was ${dueFormatted}`;
-      });
+        sections.push(
+          `Received payments total ${formatMoney(totalVerifiedPaid, "USD")} across ${verifiedPaidInvoices.length} paid invoice${verifiedPaidInvoices.length === 1 ? "" : "s"} confirmed by PayPal Sandbox:\n\n${lines.join("\n")}`
+        );
+      }
 
-      content = `Received payments total ${formatMoney(totalPaid, "USD")} across ${paidInvoices.length} paid invoice${paidInvoices.length === 1 ? "" : "s"} confirmed by PayPal Sandbox:\n\n${lines.join("\n")}\n\nNote: In CashPilot, Paid status is established exclusively through verified PayPal evidence.`;
+      if (simulatedPaidInvoices.length > 0) {
+        const simLines = simulatedPaidInvoices.map((inv) => {
+          const amt = formatMoney(inv.totalMinorUnits, inv.currency);
+          return `• ${inv.client.name} — ${inv.number ?? "Draft"}: ${amt} | [SIMULATED DEMO PAYMENT — No real money moved] | Ref: ${inv.simulatedRef ?? "SIM-DEMO"}`;
+        });
+        sections.push(
+          `Simulated payments (Demo Workspace only — no real money moved): total ${formatMoney(totalSimulatedPaid, "USD")} across ${simulatedPaidInvoices.length} invoice${simulatedPaidInvoices.length === 1 ? "" : "s"}:\n\n${simLines.join("\n")}`
+        );
+      }
 
-      suggestedActions.push({
-        label: "Open invoice",
-        actionType: "open_invoice",
-        invoiceId: paidInvoices[0].id,
-      });
+      sections.push(
+        "Note: In CashPilot, Paid status is established exclusively through verified PayPal evidence. Simulated demo payments are local demonstrations only and are never PayPal-verified."
+      );
+
+      content = sections.join("\n\n");
+
+      const firstTarget = verifiedPaidInvoices[0] || simulatedPaidInvoices[0];
+      if (firstTarget) {
+        suggestedActions.push({
+          label: "Open invoice",
+          actionType: "open_invoice",
+          invoiceId: firstTarget.id,
+        });
+      }
     }
 
     const suggestedFollowUps = [
@@ -885,9 +929,21 @@ Safety & Governance Boundaries:
     const draftInvoices = invoices.filter((i) => i.cashpilotStatus === CashPilotStatus.DRAFT);
     const draftAmount = draftInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
 
+    const simulatedInvoices = invoices.filter(
+      (i) =>
+        i.cashpilotStatus === CashPilotStatus.SIMULATED_PAID ||
+        i.paymentProvenance === "SIMULATED_DEMO_PAYMENT"
+    );
+    const simulatedAmount = simulatedInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
+
+    const simulatedBullet =
+      simulatedInvoices.length > 0
+        ? `\n• Simulated Paid (Demo — no real money moved): ${simulatedInvoices.length} (${formatMoney(simulatedAmount, "USD")})`
+        : "";
+
     const content = `All Invoices Summary (${totalCount} invoice${totalCount === 1 ? "" : "s"} · ${formatMoney(totalAmount, "USD")}):
 
-• Paid: ${paidInvoices.length} (${formatMoney(paidAmount, "USD")}) — PayPal confirmed
+• Paid: ${paidInvoices.length} (${formatMoney(paidAmount, "USD")}) — PayPal confirmed${simulatedBullet}
 • Overdue: ${overdueInvoices.length} (${formatMoney(overdueAmount, "USD")}) — requires attention
 • Due soon: ${dueSoonInvoices.length} (${formatMoney(dueSoonAmount, "USD")})
 • Awaiting payment: ${awaitingInvoices.length} (${formatMoney(awaitingAmount, "USD")})
@@ -985,10 +1041,16 @@ All monetary values calculated on the server using integer minor units. Workflow
         day: "numeric",
         year: "numeric",
       });
+      const isSim =
+        inv.cashpilotStatus === CashPilotStatus.SIMULATED_PAID ||
+        inv.paymentProvenance === "SIMULATED_DEMO_PAYMENT";
       const paypalText = inv.paypalStatus ? `${inv.paypalStatus} (PayPal)` : "Status not confirmed by PayPal";
       const days = getDaysOverdue(inv.dueDate, now);
       const overdueExtra = inv.cashpilotStatus === CashPilotStatus.OVERDUE ? ` (${days}d overdue)` : "";
-      return `• ${inv.client.name} — ${inv.number ?? "Draft"}: ${amt} | Due: ${dueFormatted}${overdueExtra} | Status: ${inv.cashpilotStatus} | ${paypalText}`;
+      const statusText = isSim
+        ? "SIMULATED_PAID [Demo Simulation — No real money moved]"
+        : `${inv.cashpilotStatus}`;
+      return `• ${inv.client.name} — ${inv.number ?? "Draft"}: ${amt} | Due: ${dueFormatted}${overdueExtra} | Status: ${statusText} | ${paypalText}`;
     });
 
     const content = `Found ${invoices.length} total invoice${invoices.length === 1 ? "" : "s"} on file:\n\n${lines.join("\n")}\n\nWorkflow and PayPal statuses are independently maintained.`;
@@ -1034,7 +1096,7 @@ All monetary values calculated on the server using integer minor units. Workflow
   }
 
   // Route 11: "Summarize [Client]" or Client Lookup
-  const clientMatch = text.match(/(?:summarise|summarize|tell me about|status of|how is)\s+([A-Za-z0-9\s&.'-]+?)(?:'s invoices| invoices)?$/i);
+  const clientMatch = text.match(/(?:summarise|summarize|summary for|tell me about|status of|how is)\s+([A-Za-z0-9\s&.'-]+?)(?:'s invoices| invoices)?$/i);
   if (clientMatch) {
     const targetName = clientMatch[1].trim().toLowerCase();
     const clientInvoices = invoices.filter(
@@ -1048,8 +1110,20 @@ All monetary values calculated on the server using integer minor units. Workflow
       const totalBilled = clientInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
       const paidInvoices = clientInvoices.filter((i) => i.cashpilotStatus === CashPilotStatus.PAID);
       const paidAmount = paidInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
+
+      const simulatedInvoices = clientInvoices.filter(
+        (i) =>
+          i.cashpilotStatus === CashPilotStatus.SIMULATED_PAID ||
+          i.paymentProvenance === "SIMULATED_DEMO_PAYMENT"
+      );
+      const simulatedAmount = simulatedInvoices.reduce((sum, i) => sum + i.totalMinorUnits, 0);
+
       const unpaidClient = clientInvoices.filter(
-        (i) => i.cashpilotStatus !== CashPilotStatus.PAID && i.cashpilotStatus !== CashPilotStatus.CANCELLED
+        (i) =>
+          i.cashpilotStatus !== CashPilotStatus.PAID &&
+          i.cashpilotStatus !== CashPilotStatus.SIMULATED_PAID &&
+          i.paymentProvenance !== "SIMULATED_DEMO_PAYMENT" &&
+          i.cashpilotStatus !== CashPilotStatus.CANCELLED
       );
       const unpaidAmount = unpaidClient.reduce((sum, i) => sum + i.totalMinorUnits, 0);
       const overdueClient = clientInvoices.filter((i) => i.cashpilotStatus === CashPilotStatus.OVERDUE);
@@ -1062,13 +1136,24 @@ All monetary values calculated on the server using integer minor units. Workflow
           day: "numeric",
           year: "numeric",
         });
+        const isSim =
+          inv.cashpilotStatus === CashPilotStatus.SIMULATED_PAID ||
+          inv.paymentProvenance === "SIMULATED_DEMO_PAYMENT";
         const paypalText = inv.paypalStatus ? `${inv.paypalStatus} (PayPal)` : "Status not confirmed by PayPal";
-        return `  - ${inv.number ?? "Draft"}: ${amt} | Due: ${dueFormatted} | Status: ${inv.cashpilotStatus} [${paypalText}]`;
+        const statusText = isSim
+          ? "SIMULATED_PAID [Demo Simulation — No real money moved]"
+          : `${inv.cashpilotStatus} [${paypalText}]`;
+        return `  - ${inv.number ?? "Draft"}: ${amt} | Due: ${dueFormatted} | Status: ${statusText}`;
       });
+
+      const simulatedBullet =
+        simulatedInvoices.length > 0
+          ? `\n• Simulated Paid (Demo — no real money moved): ${simulatedInvoices.length} (${formatMoney(simulatedAmount, "USD")})`
+          : "";
 
       const content = `Summary for ${clientName}:
 • Total invoices: ${clientInvoices.length} (${formatMoney(totalBilled, "USD")})
-• Paid: ${paidInvoices.length} (${formatMoney(paidAmount, "USD")})
+• Paid: ${paidInvoices.length} (${formatMoney(paidAmount, "USD")}) — PayPal confirmed${simulatedBullet}
 • Open / Unpaid: ${unpaidClient.length} (${formatMoney(unpaidAmount, "USD")})
 • Overdue: ${overdueClient.length} (${formatMoney(overdueAmount, "USD")})
 

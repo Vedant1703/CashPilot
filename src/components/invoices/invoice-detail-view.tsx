@@ -29,11 +29,18 @@ import {
   ArrowRight,
   Edit3,
   RotateCcw,
+  ExternalLink,
+  Copy,
+  Check,
+  Sparkles,
 } from "lucide-react";
 import { SendApprovalModal } from "./send-approval-modal";
 import { SendReminderApprovalModal } from "./send-reminder-approval-modal";
 import { CancelApprovalModal } from "./cancel-approval-modal";
+import { SimulatePaymentModal } from "./simulate-payment-modal";
 import { canSendReminder, canCancelInvoice } from "@/lib/paypal/status-mapper";
+import { PayPalPaymentSummaryCard } from "./paypal-payment-summary-card";
+import { SimulatedPaymentSummaryCard } from "./simulated-payment-summary-card";
 
 export interface SerializedActivityEvent {
   id: string;
@@ -77,9 +84,15 @@ export interface SerializedInvoiceDetail {
   cashpilotStatus: CashPilotStatus;
   paypalInvoiceId: string | null;
   paypalStatus: string | null;
+  paypalStatusRaw?: Prisma.JsonValue | unknown;
+  paypalPayerViewUrl?: string | null;
   lastSyncAt: string | null;
   syncIsStale: boolean;
   isDemoData: boolean;
+  paymentProvenance?: string | null;
+  simulatedPaymentAt?: string | null;
+  simulatedAmountMinorUnits?: number | null;
+  simulatedRef?: string | null;
   aiDraftId: string | null;
   client: {
     id: string;
@@ -119,12 +132,50 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
   const [isSendModalOpen, setIsSendModalOpen] = useState(false);
   const [isRemindModalOpen, setIsRemindModalOpen] = useState(false);
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+  const [isSimulateModalOpen, setIsSimulateModalOpen] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  const handleCopyPaymentLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch {
+      // Fallback
+    }
+  };
+
+  const isDemo = Boolean(invoice.workspace?.isDemo ?? invoice.isDemoData);
+  const isSimulated =
+    invoice.paymentProvenance === "SIMULATED_DEMO_PAYMENT" ||
+    invoice.cashpilotStatus === CashPilotStatus.SIMULATED_PAID;
+  const isAlreadyPaid =
+    invoice.cashpilotStatus === CashPilotStatus.PAID ||
+    invoice.paypalStatus === "PAID" ||
+    isSimulated;
+  const isCancelled =
+    invoice.cashpilotStatus === CashPilotStatus.CANCELLED ||
+    invoice.paypalStatus === "CANCELLED" ||
+    invoice.paypalStatus === "VOIDED";
+  const isRefunded =
+    invoice.paypalStatus === "REFUNDED" ||
+    invoice.paypalStatus === "PARTIALLY_REFUNDED";
+  const isPartiallyPaid = invoice.paypalStatus === "PARTIALLY_PAID";
+
+  // Simulation strictly allowed for eligible demo invoices in Demo Workspace
+  const canSimulate =
+    isDemo &&
+    invoice.isDemoData &&
+    !isAlreadyPaid &&
+    !isCancelled &&
+    !isRefunded &&
+    !isPartiallyPaid;
 
   // Eligible to send only if in DRAFT state and has a PayPal Sandbox draft created
   const canSend = invoice.cashpilotStatus === CashPilotStatus.DRAFT && Boolean(invoice.paypalInvoiceId);
 
-  // Eligible for reminder only if in AWAITING_PAYMENT, DUE_SOON, or OVERDUE and has PayPal invoice ID
-  const isReminderStatusEligible = canSendReminder(invoice.cashpilotStatus) && Boolean(invoice.paypalInvoiceId);
+  // Eligible for reminder only if in AWAITING_PAYMENT, DUE_SOON, or OVERDUE, not simulated, and has PayPal invoice ID
+  const isReminderStatusEligible = !isSimulated && canSendReminder(invoice.cashpilotStatus) && Boolean(invoice.paypalInvoiceId);
 
   // Cooldown: at most once every 24 hours
   const isWithinReminderCooldown = Boolean(
@@ -142,8 +193,9 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
     }
   }, [canRemind]);
 
-  // Eligible for cancellation: sent unpaid invoice with fresh provider state
+  // Eligible for cancellation: sent unpaid invoice with fresh provider state, not simulated
   const canCancel =
+    !isSimulated &&
     Boolean(invoice.paypalInvoiceId) &&
     canCancelInvoice(invoice.cashpilotStatus, invoice.paypalStatus) &&
     !invoice.syncIsStale &&
@@ -215,6 +267,42 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
     }
   };
 
+  const handleSimulateSuccess = (result: {
+    invoiceId: string;
+    paymentProvenance: string;
+    cashpilotStatus: CashPilotStatus;
+    simulatedAmountMinorUnits: number;
+    simulatedPaymentAt: string;
+    simulatedRef: string;
+  }) => {
+    setInvoice((prev) => ({
+      ...prev,
+      cashpilotStatus: result.cashpilotStatus,
+      paymentProvenance: result.paymentProvenance,
+      simulatedAmountMinorUnits: result.simulatedAmountMinorUnits,
+      simulatedPaymentAt: result.simulatedPaymentAt,
+      simulatedRef: result.simulatedRef,
+      activities: [
+        {
+          id: `act-sim-${Date.now()}`,
+          eventType: "SYSTEM_EVENT",
+          actorType: "USER",
+          actorId: "demo-user-1",
+          description: `[SIMULATED PAYMENT] Simulated payment of ${formatMoney(result.simulatedAmountMinorUnits, prev.currency)} confirmed — no real money moved. Ref: ${result.simulatedRef}`,
+          createdAt: result.simulatedPaymentAt,
+          metadata: {
+            simulated: true,
+            amountMinorUnits: result.simulatedAmountMinorUnits,
+            currency: prev.currency,
+            ref: result.simulatedRef,
+            note: "Simulated payment — no real money moved",
+          },
+        },
+        ...(prev.activities ?? []),
+      ],
+    }));
+  };
+
   const handleCancelSuccess = (cancelResult: {
     operationId: string;
     invoiceId: string;
@@ -261,6 +349,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
     paypalInvoiceId: string;
     paypalStatus: string;
     cashpilotStatus: CashPilotStatus;
+    paypalPayerViewUrl?: string | null;
     sentAt: string;
     correlationId?: string;
   }) => {
@@ -268,6 +357,7 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
       ...prev,
       cashpilotStatus: sendResult.cashpilotStatus,
       paypalStatus: sendResult.paypalStatus,
+      paypalPayerViewUrl: sendResult.paypalPayerViewUrl ?? prev.paypalPayerViewUrl,
       syncIsStale: false,
     }));
 
@@ -450,6 +540,8 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         ...prev,
         cashpilotStatus: syncData.currentCashpilotStatus ?? prev.cashpilotStatus,
         paypalStatus: syncData.currentPaypalStatus ?? prev.paypalStatus,
+        paypalStatusRaw: (syncData.paypalStatusRaw as Prisma.JsonValue) ?? prev.paypalStatusRaw,
+        paypalPayerViewUrl: syncData.paypalPayerViewUrl ?? prev.paypalPayerViewUrl,
         lastSyncAt: syncData.lastSyncAt ?? new Date().toISOString(),
         syncIsStale: false,
       }));
@@ -482,10 +574,13 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         const refreshRes = await fetch(`/api/invoices/${invoice.id}?workspaceId=${invoice.workspaceId}`);
         if (refreshRes.ok) {
           const freshData = await refreshRes.json();
-          if (freshData.success && freshData.data.activities) {
+          if (freshData.success && (freshData.data.activities || freshData.data.invoice)) {
             setInvoice((prev) => ({
               ...prev,
-              activities: freshData.data.activities,
+              ...(freshData.data.invoice?.paypalPayerViewUrl
+                ? { paypalPayerViewUrl: freshData.data.invoice.paypalPayerViewUrl }
+                : {}),
+              activities: freshData.data.activities ?? freshData.data.invoice?.activities ?? prev.activities,
             }));
           }
         }
@@ -669,6 +764,55 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
             </button>
           )}
 
+          {/* Simulate Payment Action Button (Strictly Demo Workspace & eligible invoices) */}
+          {canSimulate && (
+            <button
+              type="button"
+              onClick={() => setIsSimulateModalOpen(true)}
+              aria-label="Simulate payment in Demo Workspace"
+              className="inline-flex items-center justify-center gap-2 px-3.5 py-2 min-h-[44px] rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#16A34A] focus-visible:outline-hidden"
+            >
+              <Sparkles className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Simulate payment</span>
+            </button>
+          )}
+
+          {/* Open PayPal Invoice Link (when payer-view URL is present) */}
+          {invoice.paypalPayerViewUrl && (
+            <a
+              href={invoice.paypalPayerViewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Open PayPal invoice for customer payment"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[44px] rounded-xl bg-[#0C7C61] hover:bg-[#09624D] text-white text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
+            >
+              <ExternalLink className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+              <span>Open PayPal invoice</span>
+            </a>
+          )}
+
+          {/* Copy Payment Link (when payer-view URL is present) */}
+          {invoice.paypalPayerViewUrl && (
+            <button
+              type="button"
+              onClick={() => handleCopyPaymentLink(invoice.paypalPayerViewUrl!)}
+              aria-label="Copy customer payment link to clipboard"
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 min-h-[44px] rounded-xl border border-[#A3D9CC] bg-[#E8F5F1] hover:bg-[#D4EFE8] text-[#0C7C61] text-xs font-semibold shadow-xs active:scale-[0.98] transition-all focus-visible:ring-2 focus-visible:ring-[#0C7C61] focus-visible:outline-hidden"
+            >
+              {copiedLink ? (
+                <>
+                  <Check className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Copied link!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                  <span>Copy payment link</span>
+                </>
+              )}
+            </button>
+          )}
+
           {/* Safe Status Sync Action Button */}
           <button
             type="button"
@@ -736,6 +880,27 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
                   <span>See in Activity</span>
                   <ArrowRight className="w-3 h-3" />
                 </Link>
+              </div>
+            )}
+            {invoice.paypalPayerViewUrl && (
+              <div className="pt-2 flex flex-wrap items-center gap-2">
+                <a
+                  href={invoice.paypalPayerViewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold text-[#0C7C61] hover:underline bg-white px-2.5 py-1 rounded-lg border border-[#A3D9CC] shadow-2xs text-[11px]"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  <span>Open PayPal Invoice</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => handleCopyPaymentLink(invoice.paypalPayerViewUrl!)}
+                  className="inline-flex items-center gap-1 font-semibold text-[#0C7C61] hover:underline bg-white px-2.5 py-1 rounded-lg border border-[#A3D9CC] shadow-2xs text-[11px]"
+                >
+                  {copiedLink ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedLink ? "Copied!" : "Copy Payment Link"}</span>
+                </button>
               </div>
             )}
           </div>
@@ -897,6 +1062,61 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
               </span>
             </div>
 
+            {invoice.paypalStatus === "PAID" && (
+              <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+                <span className="text-[#5E718D]">Settlement:</span>
+                <span className="text-[11px] font-semibold text-[#0C7C61]">
+                  Verified Paid
+                </span>
+              </div>
+            )}
+            {invoice.paypalStatus === "PARTIALLY_PAID" && (
+              <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+                <span className="text-[#5E718D]">Settlement:</span>
+                <span className="text-[11px] font-semibold text-[#7A5600]">
+                  Partial Payment
+                </span>
+              </div>
+            )}
+            {invoice.paypalStatus === "REFUNDED" && (
+              <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
+                <span className="text-[#5E718D]">Settlement:</span>
+                <span className="text-[11px] font-semibold text-[#5B3FD0]">
+                  Refunded
+                </span>
+              </div>
+            )}
+
+            {invoice.paypalPayerViewUrl && (
+              <div className="py-2 border-b border-[#EEF2F6] space-y-1.5">
+                <div className="flex justify-between items-center">
+                  <span className="text-[#5E718D]">Payer View Link:</span>
+                  <span className="text-[10px] text-[#0C7C61] font-mono bg-[#E8F5F1] px-1.5 py-0.5 rounded">
+                    Verified
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={invoice.paypalPayerViewUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0C7C61] hover:underline"
+                  >
+                    <span>Open PayPal Invoice</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                  <span className="text-[#CBD5E1]">|</span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyPaymentLink(invoice.paypalPayerViewUrl!)}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0F6CBD] hover:underline"
+                  >
+                    {copiedLink ? <span>Copied!</span> : <span>Copy Link</span>}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-between py-1 border-b border-[#EEF2F6]">
               <span className="text-[#5E718D]">Last Synced:</span>
               <span className="font-mono text-[11px] text-[#5E718D]">
@@ -933,6 +1153,27 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
 
         {/* Right Column: Line Items & Totals & Audit Trail (2 cols) */}
         <div className="md:col-span-2 space-y-6">
+          {/* Demo Payment Simulation Summary Card */}
+          <SimulatedPaymentSummaryCard
+            paymentProvenance={invoice.paymentProvenance}
+            cashpilotStatus={invoice.cashpilotStatus}
+            simulatedAmountMinorUnits={invoice.simulatedAmountMinorUnits}
+            totalMinorUnits={invoice.totalMinorUnits}
+            currency={invoice.currency}
+            simulatedPaymentAt={invoice.simulatedPaymentAt}
+            simulatedRef={invoice.simulatedRef}
+          />
+
+          {/* Verified PayPal Payment / Refund Details Card */}
+          <PayPalPaymentSummaryCard
+            paypalStatusRaw={invoice.paypalStatusRaw}
+            paypalStatus={invoice.paypalStatus}
+            currency={invoice.currency}
+            paypalInvoiceId={invoice.paypalInvoiceId}
+            paypalPayerViewUrl={invoice.paypalPayerViewUrl}
+            lastSyncAt={invoice.lastSyncAt}
+          />
+
           {/* Line Items Table Card */}
           <div className="rounded-2xl bg-white border border-[#E3E8EF] shadow-xs overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-[#E3E8EF] flex items-center justify-between">
@@ -1091,6 +1332,14 @@ export function InvoiceDetailView({ initialInvoice }: InvoiceDetailViewProps) {
         invoice={invoice}
         materialPayloadHash={invoice.cancelMaterialPayloadHash ?? ""}
         onCancelSuccess={handleCancelSuccess}
+      />
+
+      {/* Demo Payment Simulation Modal */}
+      <SimulatePaymentModal
+        isOpen={isSimulateModalOpen}
+        onClose={() => setIsSimulateModalOpen(false)}
+        invoice={invoice}
+        onSimulateSuccess={handleSimulateSuccess}
       />
 
       {/* MVP Limitations Notice */}

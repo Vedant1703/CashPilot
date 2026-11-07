@@ -120,10 +120,18 @@ model Invoice {
   // CashPilot normalized workflow status (separate from provider status)
   cashpilotStatus CashPilotStatus @default(DRAFT)
 
+  // Payment provenance & demo simulation tracking (Phase 3C)
+  paymentProvenance         PaymentProvenance @default(NONE)
+  simulatedPaymentAt        DateTime?
+  simulatedAmountMinorUnits Int?
+  simulatedActorId          String?
+  simulatedRef              String?
+
   // PayPal provider data — kept strictly separate from cashpilotStatus
   paypalInvoiceId     String?   // provider-assigned ID after draft creation
   paypalStatus        String?   // raw provider status string (DRAFT, SENT, PAID, etc.)
   paypalStatusRaw     Json?     // full raw provider status object for audit
+  paypalPayerViewUrl  String?   // official PayPal payer-view link for recipient payment
   lastSyncAt          DateTime? // last successful status retrieval from provider
   syncIsStale         Boolean   @default(false) // true if last refresh failed
 
@@ -144,6 +152,7 @@ model Invoice {
   @@index([workspaceId])
   @@index([clientId])
   @@index([cashpilotStatus])
+  @@index([paymentProvenance])
   @@index([paypalInvoiceId])
 }
 
@@ -161,6 +170,13 @@ enum CashPilotStatus {
   PAID             // Only set by verified PayPal provider evidence
   CANCELLED        // Cancelled by user or provider
   NEEDS_REVIEW     // Unknown/unmapped provider state requiring human review
+  SIMULATED_PAID   // Demo workspace payment simulation only (Phase 3C)
+}
+
+enum PaymentProvenance {
+  NONE                    // Unpaid or initial state
+  PAYPAL_VERIFIED         // Confirmed payment with verified PayPal evidence
+  SIMULATED_DEMO_PAYMENT  // Demo workspace payment simulation (no real money moved)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

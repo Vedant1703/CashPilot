@@ -37,6 +37,11 @@ export function StatusBadge({
         title = "Verified PayPal payment";
       }
       break;
+    case CashPilotStatus.SIMULATED_PAID:
+      label = "Simulated Paid (Demo)";
+      symbol = "✦";
+      colorClasses = "bg-[#E8F5F1] text-[#0C7C61] border-[#A3D9CC]";
+      break;
     case CashPilotStatus.AWAITING_PAYMENT:
       label = "Awaiting Payment";
       symbol = "●";

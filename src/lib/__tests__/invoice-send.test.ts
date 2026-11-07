@@ -29,6 +29,7 @@ import { POST as sendRoute } from "@/app/api/invoices/[id]/send/route";
 import { syncInvoiceWithPayPal } from "@/lib/services/invoice.service";
 import { db } from "@/lib/db/client";
 import * as paypalAdapter from "@/lib/paypal/adapter";
+import { isValidPayPalUrl, extractPayerViewUrl } from "@/lib/paypal/adapter";
 import {
   ApprovalStatus,
   OperationType,
@@ -901,5 +902,410 @@ describe("PayPal Invoice Sending API (POST /api/invoices/[id]/send)", () => {
     expect(createDraftSpy).not.toHaveBeenCalled();
     expect(remindSpy).not.toHaveBeenCalled();
     expect(sendInvoiceSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // 16. Provider HTTP 415 error handling
+  it("handles HTTP 415 UNSUPPORTED_MEDIA_TYPE provider failure gracefully and records FAILED operation", async () => {
+    const inv = await createTestInvoice();
+    const approval = await approveTestInvoice(inv.id, inv.materialPayloadHash);
+
+    await db.invoice.update({
+      where: { id: inv.id },
+      data: { paypalInvoiceId: "INV2-ERR-415" },
+    });
+
+    sendInvoiceSpy.mockResolvedValueOnce({
+      success: false,
+      error: {
+        code: "UNSUPPORTED_MEDIA_TYPE",
+        message: "The request payload is not supported",
+        httpStatus: 415,
+        details: [],
+      },
+      correlationId: "paypal-debug-415",
+    });
+
+    const req = new NextRequest(
+      `http://localhost:3000/api/invoices/${inv.id}/send`,
+      {
+        method: "POST",
+        headers: { Cookie: sessionA.cookieHeader },
+        body: JSON.stringify({ approvalId: approval.approvalId }),
+      }
+    );
+
+    const res = await sendRoute(req, {
+      params: Promise.resolve({ id: inv.id }),
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(json.success).toBe(false);
+    expect(json.code).toBe("UNSUPPORTED_MEDIA_TYPE");
+
+    // Verify invoice remains in DRAFT and payer view URL is not set
+    const invoiceAfter = await db.invoice.findUnique({ where: { id: inv.id } });
+    expect(invoiceAfter?.cashpilotStatus).toBe(CashPilotStatus.DRAFT);
+    expect(invoiceAfter?.paypalPayerViewUrl).toBeNull();
+
+    // Verify operation recorded as FAILED
+    const op = await db.externalOperation.findFirst({
+      where: { invoiceId: inv.id, operationType: OperationType.SEND_INVOICE },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(op?.attemptState).toBe(OperationAttemptState.FAILED);
+    expect(op?.errorCode).toBe("UNSUPPORTED_MEDIA_TYPE");
+  });
+
+  // 17. Extract and persist payerViewUrl on successful send
+  it("extracts and persists payerViewUrl from provider send response and never marks invoice PAID", async () => {
+    const inv = await createTestInvoice(7);
+    const approval = await approveTestInvoice(inv.id, inv.materialPayloadHash);
+
+    await db.invoice.update({
+      where: { id: inv.id },
+      data: { paypalInvoiceId: "INV2-PAYER-VIEW-01" },
+    });
+
+    const samplePayerUrl = "https://www.sandbox.paypal.com/invoice/p/#INV2-PAYER-VIEW-01";
+
+    sendInvoiceSpy.mockResolvedValueOnce({
+      success: true,
+      data: {
+        sent: true,
+        payerViewUrl: samplePayerUrl,
+      },
+      correlationId: "debug-payer-view-200",
+    });
+
+    const req = new NextRequest(
+      `http://localhost:3000/api/invoices/${inv.id}/send`,
+      {
+        method: "POST",
+        headers: { Cookie: sessionA.cookieHeader },
+        body: JSON.stringify({ approvalId: approval.approvalId }),
+      }
+    );
+
+    const res = await sendRoute(req, {
+      params: Promise.resolve({ id: inv.id }),
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(json.data.paypalPayerViewUrl).toBe(samplePayerUrl);
+    expect(json.data.cashpilotStatus).toBe(CashPilotStatus.DUE_SOON); // due in 7 days
+    expect(json.data.cashpilotStatus).not.toBe(CashPilotStatus.PAID);
+
+    // Verify database invoice record has the persisted payer URL
+    const updatedInvoice = await db.invoice.findUnique({ where: { id: inv.id } });
+    expect(updatedInvoice?.paypalPayerViewUrl).toBe(samplePayerUrl);
+    expect(updatedInvoice?.paypalStatus).toBe("SENT");
+  });
+
+  // 18. Missing payer URL handling: safe fallback, never invent URLs
+  it("handles missing payer URL safely without error and never invents a URL", async () => {
+    const inv = await createTestInvoice(10);
+    const approval = await approveTestInvoice(inv.id, inv.materialPayloadHash);
+
+    await db.invoice.update({
+      where: { id: inv.id },
+      data: { paypalInvoiceId: "INV2-NO-URL" },
+    });
+
+    sendInvoiceSpy.mockResolvedValueOnce({
+      success: true,
+      data: {
+        sent: true,
+        payerViewUrl: null,
+      },
+      correlationId: "debug-no-url",
+    });
+
+    const req = new NextRequest(
+      `http://localhost:3000/api/invoices/${inv.id}/send`,
+      {
+        method: "POST",
+        headers: { Cookie: sessionA.cookieHeader },
+        body: JSON.stringify({ approvalId: approval.approvalId }),
+      }
+    );
+
+    const res = await sendRoute(req, {
+      params: Promise.resolve({ id: inv.id }),
+    });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(json.data.paypalPayerViewUrl).toBeNull();
+
+    const updatedInvoice = await db.invoice.findUnique({ where: { id: inv.id } });
+    expect(updatedInvoice?.paypalPayerViewUrl).toBeNull();
+  });
+
+  // 19. Status synchronization updates paypalPayerViewUrl
+  it("updates paypalPayerViewUrl during provider status synchronization if returned by PayPal", async () => {
+    const inv = await createTestInvoice();
+    await db.invoice.update({
+      where: { id: inv.id },
+      data: {
+        paypalInvoiceId: "INV2-SYNC-PAYER-URL",
+        paypalStatus: "SENT",
+        cashpilotStatus: CashPilotStatus.AWAITING_PAYMENT,
+        paypalPayerViewUrl: null,
+      },
+    });
+
+    const syncedUrl = "https://www.sandbox.paypal.com/invoice/p/#SYNCLINK12345";
+
+    getStatusSpy.mockResolvedValueOnce({
+      success: true,
+      data: {
+        id: "INV2-SYNC-PAYER-URL",
+        status: "SENT",
+        detail: {
+          currency_code: "USD",
+          metadata: {
+            recipient_view_url: syncedUrl,
+          },
+        },
+      },
+      correlationId: "debug-sync-payer-url",
+    });
+
+    const syncResult = await syncInvoiceWithPayPal(
+      workspaceA,
+      ownerA,
+      inv.id
+    );
+
+    expect(syncResult.ok).toBe(true);
+    if (syncResult.ok) {
+      expect(syncResult.data.paypalPayerViewUrl).toBe(syncedUrl);
+    }
+
+    const updatedDb = await db.invoice.findUnique({ where: { id: inv.id } });
+    expect(updatedDb?.paypalPayerViewUrl).toBe(syncedUrl);
+  });
+
+  // 20. Unit validation of extractPayerViewUrl and domain safety
+  it("verifies extractPayerViewUrl extracts valid links and rejects malicious URLs", () => {
+    // Single HATEOAS object
+    expect(
+      paypalAdapter.extractPayerViewUrl({
+        href: "https://www.sandbox.paypal.com/invoice/p/#ABC123",
+        rel: "payer-view",
+        method: "GET",
+      })
+    ).toBe("https://www.sandbox.paypal.com/invoice/p/#ABC123");
+
+    // Links array
+    expect(
+      paypalAdapter.extractPayerViewUrl({
+        links: [
+          { href: "https://api.sandbox.paypal.com/v2/invoices/1", rel: "self" },
+          { href: "https://www.sandbox.paypal.com/invoice/p/#XYZ789", rel: "payer-view" },
+        ],
+      })
+    ).toBe("https://www.sandbox.paypal.com/invoice/p/#XYZ789");
+
+    // Detail metadata
+    expect(
+      paypalAdapter.extractPayerViewUrl({
+        detail: {
+          metadata: {
+            recipient_view_url: "https://www.sandbox.paypal.com/invoice/p/#META001",
+          },
+        },
+      })
+    ).toBe("https://www.sandbox.paypal.com/invoice/p/#META001");
+
+    // Production paypal.com link
+    expect(
+      paypalAdapter.extractPayerViewUrl({
+        href: "https://www.paypal.com/invoice/p/#PROD001",
+        rel: "payer-view",
+      })
+    ).toBe("https://www.paypal.com/invoice/p/#PROD001");
+
+    // Rejection of malicious / unauthorized domains
+    expect(
+      paypalAdapter.extractPayerViewUrl({
+        href: "http://www.sandbox.paypal.com/invoice/p/#INSECURE", // non-https
+        rel: "payer-view",
+      })
+    ).toBeNull();
+
+    expect(
+      paypalAdapter.extractPayerViewUrl({
+        href: "https://evil-phishing.com/invoice/p/#ABC", // unauthorized domain
+        rel: "payer-view",
+      })
+    ).toBeNull();
+
+    expect(
+      paypalAdapter.extractPayerViewUrl({
+        href: "javascript:alert(1)", // XSS vector
+        rel: "payer-view",
+      })
+    ).toBeNull();
+
+    // Missing / null payload
+    expect(paypalAdapter.extractPayerViewUrl(null)).toBeNull();
+    expect(paypalAdapter.extractPayerViewUrl({})).toBeNull();
+  });
+
+  // 21. Focused payer URL security tests (deceptive cases & legitimate hosts)
+  it("strictly validates genuine PayPal HTTPS hostnames and rejects deceptive or malicious URLs", () => {
+    // Legitimate expected hosts must be accepted
+    expect(isValidPayPalUrl("https://www.sandbox.paypal.com/")).toBe(true);
+    expect(isValidPayPalUrl("https://sandbox.paypal.com/")).toBe(true);
+    expect(isValidPayPalUrl("https://www.paypal.com/")).toBe(true);
+    expect(isValidPayPalUrl("https://paypal.com/")).toBe(true);
+
+    // With typical invoice paths and fragments
+    expect(isValidPayPalUrl("https://www.sandbox.paypal.com/invoice/p/#INV2-TEST-123")).toBe(true);
+    expect(isValidPayPalUrl("https://www.paypal.com/invoice/p/#INV2-TEST-123")).toBe(true);
+
+    // Deceptive URL cases must be strictly rejected
+    expect(isValidPayPalUrl("https://paypal.com.attacker.example/")).toBe(false);
+    expect(isValidPayPalUrl("https://paypal.com@attacker.example/")).toBe(false);
+    expect(isValidPayPalUrl("https://attacker-paypal.com/")).toBe(false);
+    expect(isValidPayPalUrl("http://www.paypal.com/")).toBe(false); // Insecure HTTP
+    expect(isValidPayPalUrl("https://evil.paypal.com/")).toBe(false); // Disallowed arbitrary subdomain
+
+    // Verify extractPayerViewUrl also rejects these deceptive URLs
+    expect(
+      extractPayerViewUrl({
+        href: "https://paypal.com.attacker.example/invoice/p/#FAKE",
+        rel: "payer-view",
+      })
+    ).toBeNull();
+
+    expect(
+      extractPayerViewUrl({
+        href: "https://paypal.com@attacker.example/invoice/p/#FAKE",
+        rel: "payer-view",
+      })
+    ).toBeNull();
+
+    expect(
+      extractPayerViewUrl({
+        href: "https://attacker-paypal.com/invoice/p/#FAKE",
+        rel: "payer-view",
+      })
+    ).toBeNull();
+
+    expect(
+      extractPayerViewUrl({
+        href: "http://www.paypal.com/invoice/p/#INSECURE",
+        rel: "payer-view",
+      })
+    ).toBeNull();
+
+    expect(
+      extractPayerViewUrl({
+        href: "https://evil.paypal.com/invoice/p/#SUBDOMAIN",
+        rel: "payer-view",
+      })
+    ).toBeNull();
+  });
+
+  // 22. PayPal send request headers and body verification
+  it("verifies sendPayPalInvoice sends correct headers (Accept, Content-Type, Authorization) and request body", async () => {
+    // Restore spy temporarily so we test the real adapter function
+    sendInvoiceSpy.mockRestore();
+
+    const originalFetch = global.fetch;
+    const prevClientId = process.env.PAYPAL_CLIENT_ID;
+    const prevClientSecret = process.env.PAYPAL_CLIENT_SECRET;
+    const prevAiKey = process.env.AI_API_KEY;
+    const prevSessionSecret = process.env.SESSION_SECRET;
+
+    process.env.PAYPAL_CLIENT_ID = "mock-client-id-12345678901234567890";
+    process.env.PAYPAL_CLIENT_SECRET = "mock-client-secret-12345678901234567890";
+    process.env.AI_API_KEY = "mock-ai-api-key";
+    process.env.SESSION_SECRET = "mock-session-secret-32-chars-long-123456";
+
+    let interceptedUrl = "";
+    let interceptedOptions: RequestInit | undefined;
+
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const urlStr = input.toString();
+      if (urlStr.includes("/v1/oauth2/token")) {
+        return new Response(
+          JSON.stringify({
+            access_token: "mock-access-token-xyz",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (urlStr.includes("/send")) {
+        interceptedUrl = urlStr;
+        interceptedOptions = init;
+        return new Response(
+          JSON.stringify({
+            href: "https://www.sandbox.paypal.com/invoice/p/#INV2-VERIFY-HEADERS",
+            rel: "payer-view",
+            method: "GET",
+          }),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "paypal-debug-id": "debug-header-check-001",
+            },
+          }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const result = await paypalAdapter.sendPayPalInvoice(
+        "INV2-VERIFY-HEADERS",
+        "req-idempotency-123"
+      );
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.sent).toBe(true);
+        expect(result.data.payerViewUrl).toBe(
+          "https://www.sandbox.paypal.com/invoice/p/#INV2-VERIFY-HEADERS"
+        );
+      }
+
+      // Check URL and method
+      expect(interceptedUrl).toContain("/v2/invoicing/invoices/INV2-VERIFY-HEADERS/send");
+      expect(interceptedOptions?.method).toBe("POST");
+
+      // Check headers
+      const headers = interceptedOptions?.headers as Record<string, string>;
+      expect(headers).toBeDefined();
+      expect(headers["Authorization"]).toBe("Bearer mock-access-token-xyz");
+      expect(headers["Content-Type"]).toBe("application/json");
+      expect(headers["Accept"]).toBe("application/json");
+      expect(headers["PayPal-Request-Id"]).toBe("req-idempotency-123");
+
+      // Check body
+      expect(interceptedOptions?.body).toBeDefined();
+      const bodyObj = JSON.parse(interceptedOptions?.body as string);
+      expect(bodyObj).toEqual({
+        send_to_invoicer: true,
+        send_to_recipient: true,
+      });
+    } finally {
+      global.fetch = originalFetch;
+      process.env.PAYPAL_CLIENT_ID = prevClientId;
+      process.env.PAYPAL_CLIENT_SECRET = prevClientSecret;
+      process.env.AI_API_KEY = prevAiKey;
+      process.env.SESSION_SECRET = prevSessionSecret;
+      // Re-spy for subsequent cleanup
+      vi.spyOn(paypalAdapter, "sendPayPalInvoice");
+    }
   });
 });

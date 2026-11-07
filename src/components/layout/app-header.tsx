@@ -5,7 +5,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { CashPilotLogo } from "@/components/brand/cashpilot-logo";
 import { ReconciliationModal } from "@/components/collections/reconciliation-modal";
-import { RefreshCw, Plus, Menu, X, ShieldAlert, LogOut } from "lucide-react";
+import { DemoResetModal } from "./demo-reset-modal";
+import { RefreshCw, Plus, Menu, X, ShieldAlert, LogOut, RotateCcw } from "lucide-react";
 
 interface AppHeaderProps {
   lastSyncAt?: string | null;
@@ -104,6 +105,7 @@ export function AppHeader({
 }: AppHeaderProps) {
   const router = useRouter();
   const [showReconciliationModal, setShowReconciliationModal] = useState(false);
+  const [showDemoResetModal, setShowDemoResetModal] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -146,6 +148,20 @@ export function AppHeader({
           </div>
 
           <div className="flex items-center gap-3">
+            {isDemo && (
+              <button
+                type="button"
+                onClick={() => setShowDemoResetModal(true)}
+                id="reset-demo-data-btn"
+                aria-label="Reset demo workspace to pristine state"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold text-white bg-white/15 hover:bg-white/25 border border-white/20 active:scale-[0.98] transition-all cursor-pointer"
+                title="Reset demo workspace to pristine seeded baseline"
+              >
+                <RotateCcw className="w-3 h-3 text-[#34C79F]" />
+                <span>Reset Demo Data</span>
+              </button>
+            )}
+
             {hasStaleInvoices ? (
               <span className="inline-flex items-center gap-1 text-[#F2C65A] font-medium">
                 <ShieldAlert className="w-3.5 h-3.5" />
@@ -313,6 +329,21 @@ export function AppHeader({
               <span>Refresh Status</span>
             </button>
 
+            {isDemo && (
+              <button
+                type="button"
+                id="mobile-reset-demo-btn"
+                onClick={() => {
+                  setShowDemoResetModal(true);
+                  setMobileMenuOpen(false);
+                }}
+                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-[#CBD5E1] text-[#12263F] bg-white text-xs font-semibold hover:bg-[#F6F5F1]"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-[#0C7C61]" />
+                <span>Reset Demo Data</span>
+              </button>
+            )}
+
             {user && (
               <button
                 type="button"
@@ -334,6 +365,14 @@ export function AppHeader({
         isOpen={showReconciliationModal}
         onClose={() => setShowReconciliationModal(false)}
       />
+
+      {/* Demo Workspace Reset Modal */}
+      {isDemo && (
+        <DemoResetModal
+          isOpen={showDemoResetModal}
+          onClose={() => setShowDemoResetModal(false)}
+        />
+      )}
     </header>
   );
 }

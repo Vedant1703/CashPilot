@@ -112,6 +112,8 @@ async function AskNaviContent() {
       (i) =>
         isSameDay(i.dueDate, now) &&
         i.cashpilotStatus !== CashPilotStatus.PAID &&
+        i.cashpilotStatus !== CashPilotStatus.SIMULATED_PAID &&
+        i.paymentProvenance !== "SIMULATED_DEMO_PAYMENT" &&
         i.cashpilotStatus !== CashPilotStatus.CANCELLED
     ).length,
     dueSoon: invoices.filter((i) => i.cashpilotStatus === CashPilotStatus.DUE_SOON).length,

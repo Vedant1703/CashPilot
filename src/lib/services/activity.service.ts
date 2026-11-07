@@ -15,6 +15,7 @@ import { db } from "@/lib/db/client";
 import {
   ActivityEventType,
   ActorType,
+  CashPilotStatus,
   Prisma,
 } from "@prisma/client";
 import { minorUnitsToDecimalString } from "@/lib/money";
@@ -158,11 +159,15 @@ export function deriveOutcomeBadge(
 ): OutcomeBadge {
   const descLower = description.toLowerCase();
   const meta = (metadata as Record<string, unknown>) || {};
+  const providerStatus = typeof meta.providerStatus === "string" ? meta.providerStatus.trim().toUpperCase() : "";
+  const cashpilotStatus = typeof meta.cashpilotStatus === "string" ? meta.cashpilotStatus.trim().toUpperCase() : "";
 
   // 1. Blocked or rejected events
   if (
     eventType === ActivityEventType.APPROVAL_INVALIDATED ||
     eventType === ActivityEventType.APPROVAL_EXPIRED ||
+    providerStatus === "CANCELLED" ||
+    providerStatus === "VOIDED" ||
     descLower.includes("blocked") ||
     descLower.includes("rejected") ||
     descLower.includes("denied") ||
@@ -189,19 +194,29 @@ export function deriveOutcomeBadge(
     return { label: "Failed", variant: "rejected" };
   }
 
-  // 4. Multi-invoice partial reconciliation
+  // 4. Multi-invoice partial reconciliation, partial payments, or refunds requiring review
   if (
-    eventType === ActivityEventType.STATUS_SYNC_SUCCESS &&
-    (meta.staleCount as number > 0 || descLower.includes("needs review") || descLower.includes("couldn't be reached"))
+    (eventType === ActivityEventType.STATUS_SYNC_SUCCESS || eventType === ActivityEventType.STATUS_SYNC_RECONCILED) &&
+    (
+      (meta.staleCount as number) > 0 ||
+      providerStatus === "PARTIALLY_PAID" ||
+      providerStatus === "REFUNDED" ||
+      providerStatus === "PARTIALLY_REFUNDED" ||
+      descLower.includes("needs review") ||
+      descLower.includes("couldn't be reached")
+    )
   ) {
     return { label: "Partial", variant: "partial" };
   }
 
-  // 5. Verified PayPal operations
+  // 5. Verified PayPal operations & payment confirmations
   if (
     eventType === ActivityEventType.OPERATION_SUCCEEDED ||
     eventType === ActivityEventType.STATUS_SYNC_RECONCILED ||
+    providerStatus === "PAID" ||
+    cashpilotStatus === "PAID" ||
     descLower.includes("confirmed by paypal") ||
+    descLower.includes("payment confirmed") ||
     descLower.includes("paypal draft created") ||
     descLower.includes("sent via paypal") ||
     descLower.includes("paid via paypal")
@@ -421,9 +436,73 @@ export async function getWorkspaceActivityFeed(
 
     switch (act.eventType) {
       case ActivityEventType.STATUS_SYNC_SUCCESS:
-      case ActivityEventType.STATUS_SYNC_RECONCILED:
-        title = `Status refreshed · ${meta.totalQueried ?? meta.totalScanned ?? "all"} invoices`;
-        subtitle = `System · ${meta.staleCount ?? 0} needs review, ${meta.changedCount ?? 0} updated`;
+      case ActivityEventType.STATUS_SYNC_RECONCILED: {
+        const isBatch =
+          !act.invoiceId ||
+          meta.totalInvoicesScanned !== undefined ||
+          meta.totalPaypalInvoicesQueried !== undefined ||
+          meta.totalQueried !== undefined ||
+          meta.totalScanned !== undefined;
+
+        if (isBatch) {
+          title = `Status refreshed · ${meta.totalQueried ?? meta.totalScanned ?? meta.totalPaypalInvoicesQueried ?? "all"} invoices`;
+          subtitle = `System · ${meta.staleCount ?? 0} needs review, ${meta.changedCount ?? 0} updated`;
+        } else {
+          // Single-invoice sync
+          const providerStatus = (meta.providerStatus as string)?.trim().toUpperCase();
+          const cashpilotStatus =
+            (meta.cashpilotStatus as string)?.trim().toUpperCase() ??
+            act.invoice?.cashpilotStatus;
+          const statusChanged = Boolean(meta.statusChanged);
+          const formattedAmt = act.invoice?.totalMinorUnits
+            ? `$${minorUnitsToDecimalString(act.invoice.totalMinorUnits)}`
+            : "";
+          const clientTarget = clientName ? ` by ${clientName}` : "";
+
+          if (statusChanged && (cashpilotStatus === "PAID" || providerStatus === "PAID")) {
+            title = `Payment confirmed via PayPal · ${invoiceNum ?? "INV"}`;
+            subtitle = formattedAmt
+              ? `PayPal · ${formattedAmt} confirmed paid${clientTarget}`
+              : `PayPal · Payment confirmed${clientTarget}`;
+          } else if (!statusChanged && (cashpilotStatus === "PAID" || providerStatus === "PAID")) {
+            title = `Status verified · ${invoiceNum ?? "INV"}`;
+            subtitle = "PayPal · Payment status remains confirmed (PAID)";
+          } else if (statusChanged && providerStatus === "PARTIALLY_PAID") {
+            title = `Partial payment reported · ${invoiceNum ?? "INV"}`;
+            subtitle = "PayPal · Requires review by you";
+          } else if (
+            statusChanged &&
+            providerStatus &&
+            ["REFUNDED", "PARTIALLY_REFUNDED"].includes(providerStatus)
+          ) {
+            title = `Refund reported · ${invoiceNum ?? "INV"}`;
+            subtitle = `PayPal · Status updated to ${providerStatus} (requires review)`;
+          } else if (
+            statusChanged &&
+            providerStatus &&
+            ["CANCELLED", "VOIDED"].includes(providerStatus)
+          ) {
+            title = `Invoice cancelled · ${invoiceNum ?? "INV"}`;
+            subtitle = "PayPal · Cancelled on PayPal Sandbox";
+          } else if (!statusChanged) {
+            title = `Status verified · ${invoiceNum ?? "INV"}`;
+            subtitle = `PayPal · Status unchanged (${providerStatus ?? "SENT"})`;
+          } else {
+            title = `Status refreshed · ${invoiceNum ?? "INV"}`;
+            subtitle = `PayPal · Provider status: ${providerStatus ?? "confirmed"}`;
+          }
+        }
+        break;
+      }
+
+      case ActivityEventType.STATUS_SYNC_FAILED:
+        if (act.invoiceId) {
+          title = `Sync failed · ${invoiceNum ?? "INV"}`;
+          subtitle = "PayPal · Last known status preserved";
+        } else {
+          title = "Status refresh failed";
+          subtitle = `System · ${act.description}`;
+        }
         break;
 
       case ActivityEventType.OPERATION_SUCCEEDED:
@@ -479,7 +558,7 @@ export async function getWorkspaceActivityFeed(
     const outcomeBadge = deriveOutcomeBadge(
       act.eventType,
       act.actorType,
-      act.description,
+      `${title} ${act.description}`,
       act.metadata
     );
 
@@ -646,31 +725,11 @@ export async function getInvoiceEndToEndTrace(
       (op.attemptState === "SUCCESS" || (op.attemptState as string) === "SUCCEEDED")
   );
 
-  if (sendOp) {
-    const timeStr = formatTime(sendOp.completedAt ?? sendOp.createdAt);
-    steps.push({
-      stepNumber: 5,
-      title: "PayPal's response",
-      badgeLabel: "PayPal",
-      badgeVariant: "confirmed",
-      summary: `${timeStr} · accepted, status SENT`,
-      timestamp: (sendOp.completedAt ?? sendOp.createdAt).toISOString(),
-      status: "completed",
-      details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp.providerInvoiceId}`,
-    });
-  } else if (draftOp) {
-    const timeStr = formatTime(draftOp.completedAt ?? draftOp.createdAt);
-    steps.push({
-      stepNumber: 5,
-      title: "PayPal's response",
-      badgeLabel: "PayPal",
-      badgeVariant: "confirmed",
-      summary: `${timeStr} · draft created on PayPal`,
-      timestamp: (draftOp.completedAt ?? draftOp.createdAt).toISOString(),
-      status: "in_progress",
-      details: `Draft ID: ${draftOp.providerInvoiceId ?? invoice.paypalInvoiceId}`,
-    });
-  } else {
+  const rawPaypalStatus = invoice.paypalStatus?.trim().toUpperCase();
+  const rawCashpilotStatus = invoice.cashpilotStatus;
+  const isTransmitted = Boolean(sendOp || draftOp || invoice.paypalInvoiceId);
+
+  if (!isTransmitted) {
     steps.push({
       stepNumber: 5,
       title: "PayPal's response",
@@ -679,6 +738,122 @@ export async function getInvoiceEndToEndTrace(
       summary: "Not yet transmitted to PayPal Sandbox",
       status: "pending",
       details: "No network writes performed prior to approval",
+    });
+  } else if (invoice.syncIsStale) {
+    const timeStr = formatTime(invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "unknown",
+      summary: `${timeStr} · sync failed, last known status preserved`,
+      timestamp: (invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt).toISOString(),
+      status: "flagged",
+      details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp?.providerInvoiceId ?? "Unknown"}${rawPaypalStatus ? ` · Last known status: ${rawPaypalStatus}` : ""}`,
+    });
+  } else if (
+    invoice.paymentProvenance === "SIMULATED_DEMO_PAYMENT" ||
+    rawCashpilotStatus === CashPilotStatus.SIMULATED_PAID
+  ) {
+    const timeStr = formatTime(
+      invoice.simulatedPaymentAt ?? invoice.updatedAt
+    );
+    steps.push({
+      stepNumber: 5,
+      title: "Payment simulation (Demo)",
+      badgeLabel: "Simulated",
+      badgeVariant: "confirmed",
+      summary: `${timeStr} · payment simulated (no real money moved)`,
+      timestamp: (invoice.simulatedPaymentAt ?? invoice.updatedAt).toISOString(),
+      status: "completed",
+      details: `Simulation Ref: ${invoice.simulatedRef ?? "SIM-DEMO"} · Demo simulation only · No PayPal API calls executed`,
+    });
+  } else if (rawPaypalStatus === "PAID" || rawCashpilotStatus === CashPilotStatus.PAID) {
+    const timeStr = formatTime(invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "confirmed",
+      summary: `${timeStr} · payment verified (PAID)`,
+      timestamp: (invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt).toISOString(),
+      status: "completed",
+      details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp?.providerInvoiceId}`,
+    });
+  } else if (rawPaypalStatus === "PARTIALLY_PAID") {
+    const timeStr = formatTime(invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "partial",
+      summary: `${timeStr} · partial payment received (PARTIALLY_PAID)`,
+      timestamp: (invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt).toISOString(),
+      status: "flagged",
+      details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp?.providerInvoiceId} · Requires review`,
+    });
+  } else if (
+    rawPaypalStatus &&
+    ["REFUNDED", "PARTIALLY_REFUNDED", "MARKED_AS_PAID", "MARKED_AS_REFUNDED"].includes(rawPaypalStatus)
+  ) {
+    const timeStr = formatTime(invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "partial",
+      summary: `${timeStr} · provider status ${rawPaypalStatus}`,
+      timestamp: (invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt).toISOString(),
+      status: "flagged",
+      details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp?.providerInvoiceId} · Requires review`,
+    });
+  } else if (rawPaypalStatus && ["CANCELLED", "VOIDED"].includes(rawPaypalStatus)) {
+    const timeStr = formatTime(invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "rejected",
+      summary: `${timeStr} · invoice cancelled (${rawPaypalStatus})`,
+      timestamp: (invoice.lastSyncAt ?? sendOp?.completedAt ?? invoice.updatedAt).toISOString(),
+      status: "completed",
+      details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp?.providerInvoiceId}`,
+    });
+  } else if (sendOp || rawPaypalStatus === "SENT" || rawCashpilotStatus === CashPilotStatus.AWAITING_PAYMENT) {
+    const timeStr = formatTime(sendOp?.completedAt ?? invoice.lastSyncAt ?? sendOp?.createdAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "confirmed",
+      summary: `${timeStr} · accepted, status SENT`,
+      timestamp: (sendOp?.completedAt ?? invoice.lastSyncAt ?? sendOp?.createdAt ?? invoice.updatedAt).toISOString(),
+      status: "completed",
+      details: `Provider ID: ${invoice.paypalInvoiceId ?? sendOp?.providerInvoiceId}`,
+    });
+  } else if (draftOp || rawPaypalStatus === "DRAFT") {
+    const timeStr = formatTime(draftOp?.completedAt ?? draftOp?.createdAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "confirmed",
+      summary: `${timeStr} · draft created on PayPal`,
+      timestamp: (draftOp?.completedAt ?? draftOp?.createdAt ?? invoice.updatedAt).toISOString(),
+      status: "in_progress",
+      details: `Draft ID: ${draftOp?.providerInvoiceId ?? invoice.paypalInvoiceId}`,
+    });
+  } else {
+    const timeStr = formatTime(invoice.lastSyncAt ?? invoice.updatedAt);
+    steps.push({
+      stepNumber: 5,
+      title: "PayPal's response",
+      badgeLabel: "PayPal",
+      badgeVariant: "neutral",
+      summary: `${timeStr} · status recorded (${rawPaypalStatus ?? "unknown"})`,
+      timestamp: (invoice.lastSyncAt ?? invoice.updatedAt).toISOString(),
+      status: "completed",
+      details: `Provider ID: ${invoice.paypalInvoiceId}`,
     });
   }
 
