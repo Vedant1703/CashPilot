@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import Link from "next/link";
 import {
   Search,
   Plus,
@@ -463,23 +464,34 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
 
                       {/* Invoices Count */}
                       <td className="py-3.5 px-5">
-                        <span
-                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-medium ${
+                        <Link
+                          href={`/invoices?q=${encodeURIComponent(client.name)}`}
+                          className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-medium hover:underline transition-colors ${
                             invCount > 0
-                              ? "bg-[#E8F5F1] text-[#0C7C61] border border-[#A3E5D4]"
-                              : "bg-[#F6F5F1] text-[#5E718D] border border-[#E3E8EF]"
+                              ? "bg-[#E8F5F1] text-[#0C7C61] border border-[#A3E5D4] hover:bg-[#D5F0E8]"
+                              : "bg-[#F6F5F1] text-[#5E718D] border border-[#E3E8EF] hover:bg-[#EEF2F6]"
                           }`}
+                          title={`View ${invCount} invoice(s) for ${client.name}`}
                         >
                           <FileText className="w-3 h-3" aria-hidden="true" />
                           <span>
                             {`${invCount} ${invCount === 1 ? "invoice" : "invoices"}`}
                           </span>
-                        </span>
+                        </Link>
                       </td>
 
                       {/* Actions */}
                       <td className="py-3.5 px-5 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1">
+                          <Link
+                            href={`/invoices?q=${encodeURIComponent(client.name)}`}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-[#E3E8EF] hover:bg-[#E8F5F1] hover:border-[#A3E5D4] hover:text-[#0C7C61] text-xs font-semibold text-[#5E718D] transition-colors touch-target"
+                            title={`View invoices for ${client.name}`}
+                          >
+                            <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                            <span>Invoices</span>
+                          </Link>
+
                           <button
                             type="button"
                             onClick={() => handleOpenEditModal(client)}
@@ -563,6 +575,13 @@ export function ClientDirectory({ initialClients }: ClientDirectoryProps) {
                   </div>
 
                   <div className="pt-2 border-t border-[#EEF2F6] flex items-center justify-end gap-2">
+                    <Link
+                      href={`/invoices?q=${encodeURIComponent(client.name)}`}
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-[#E3E8EF] hover:bg-[#E8F5F1] hover:border-[#A3E5D4] text-[#0C7C61] text-xs font-semibold touch-target"
+                    >
+                      <FileText className="w-3.5 h-3.5" aria-hidden="true" />
+                      <span>Invoices</span>
+                    </Link>
                     <button
                       type="button"
                       onClick={() => handleOpenEditModal(client)}

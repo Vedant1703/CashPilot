@@ -412,13 +412,13 @@ export function calculateDashboardMetrics(
     naviHeadline = `${overdueCount} invoice${overdueCount > 1 ? "s" : ""} overdue.`;
     naviBody = `${oldestOverdueClient} is ${oldestOverdueDays} days past due date. Consider sending a friendly reminder.`;
     primaryActionLabel = "Review overdue invoices";
-    primaryActionHref = "/collections?stage=overdue";
+    primaryActionHref = "/invoices?status=overdue";
   } else if (dueSoonCount > 0) {
     actionRequiredCount = dueSoonCount;
     naviHeadline = `${dueSoonCount} invoice${dueSoonCount > 1 ? "s" : ""} approaching deadline.`;
     naviBody = `${closestDueClient} is due in ${closestDueDays} day${closestDueDays === 1 ? "" : "s"}. Track incoming payments on the collections board.`;
     primaryActionLabel = "View due soon";
-    primaryActionHref = "/collections?stage=due_soon";
+    primaryActionHref = "/invoices?status=due_soon";
   }
 
   return {
@@ -429,7 +429,7 @@ export function calculateDashboardMetrics(
       count: outstandingCount,
       currency,
       contextText: `${outstandingCount} sent invoice${outstandingCount === 1 ? "" : "s"}`,
-      href: "/collections?stage=awaiting",
+      href: "/invoices?status=unpaid",
       badgeText: "Unpaid sent",
       badgeType: "teal",
     },
@@ -443,7 +443,7 @@ export function calculateDashboardMetrics(
         overdueCount > 0
           ? `${overdueCount} invoice${overdueCount === 1 ? "" : "s"} · oldest ${oldestOverdueDays}d late`
           : "0 invoices overdue",
-      href: "/collections?stage=overdue",
+      href: "/invoices?status=overdue",
       badgeText: overdueCount > 0 ? `${oldestOverdueDays}d late` : undefined,
       badgeType: "red",
     },
@@ -457,7 +457,7 @@ export function calculateDashboardMetrics(
         dueSoonCount > 0
           ? `${dueSoonCount} invoice${dueSoonCount === 1 ? "" : "s"} due within 3 days`
           : "No invoices due soon",
-      href: "/collections?stage=due_soon",
+      href: "/invoices?status=due_soon",
       badgeText: dueSoonCount > 0 ? "Upcoming" : undefined,
       badgeType: "gold",
     },
@@ -473,7 +473,7 @@ export function calculateDashboardMetrics(
             ? `${paidThisMonthCount} invoice${paidThisMonthCount === 1 ? "" : "s"} · confirmed by PayPal`
             : `${paidThisMonthCount} demo payment${paidThisMonthCount === 1 ? "" : "s"} (simulated · no real money moved)`
           : "0 payments recorded this month",
-      href: "/collections?stage=paid",
+      href: "/invoices?status=paid",
       badgeText: paidThisMonthCount > 0 ? (hasRealInvoices ? "Confirmed" : "Simulated") : undefined,
       badgeType: "teal",
     },

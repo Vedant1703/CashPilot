@@ -104,7 +104,7 @@ export function InvoiceTable({
     setSearchQuery(urlSearchParam);
   }
 
-  const [sortField, setSortField] = useState<"dueDate" | "amount" | "number">("dueDate");
+  const [sortField, setSortField] = useState<"dueDate" | "invoiceDate" | "amount" | "number">("dueDate");
   const [sortAsc, setSortAsc] = useState<boolean>(true);
 
   // Clean up debounce timer on unmount
@@ -270,6 +270,11 @@ export function InvoiceTable({
           const numB = b.number ?? b.id;
           return sortAsc ? numA.localeCompare(numB) : numB.localeCompare(numA);
         }
+        if (sortField === "invoiceDate") {
+          const dateA = parseDate(a.invoiceDate).getTime();
+          const dateB = parseDate(b.invoiceDate).getTime();
+          return sortAsc ? dateA - dateB : dateB - dateA;
+        }
         // Default: due date
         const dateA = parseDate(a.dueDate).getTime();
         const dateB = parseDate(b.dueDate).getTime();
@@ -277,7 +282,7 @@ export function InvoiceTable({
       });
   }, [invoices, filter, searchQuery, sortField, sortAsc, now]);
 
-  const toggleSort = (field: "dueDate" | "amount" | "number") => {
+  const toggleSort = (field: "dueDate" | "invoiceDate" | "amount" | "number") => {
     if (sortField === field) {
       setSortAsc(!sortAsc);
     } else {
@@ -422,6 +427,16 @@ export function InvoiceTable({
               <th scope="col" className="py-3 px-4 sm:px-6">
                 <button
                   type="button"
+                  onClick={() => toggleSort("invoiceDate")}
+                  className="inline-flex items-center gap-1 hover:text-[#12263F]"
+                >
+                  <span>Issue Date</span>
+                  <ArrowUpDown className="w-3 h-3" />
+                </button>
+              </th>
+              <th scope="col" className="py-3 px-4 sm:px-6">
+                <button
+                  type="button"
                   onClick={() => toggleSort("dueDate")}
                   className="inline-flex items-center gap-1 hover:text-[#12263F]"
                 >
@@ -444,7 +459,7 @@ export function InvoiceTable({
           <tbody className="divide-y divide-[#EEF2F6] text-xs">
             {filteredInvoices.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-12 text-center text-xs text-[#5E718D]">
+                <td colSpan={8} className="py-12 text-center text-xs text-[#5E718D]">
                   No invoices matched your filter criteria.
                 </td>
               </tr>
@@ -519,6 +534,15 @@ export function InvoiceTable({
                     {/* Amount (Tabular figures, ISO currency) */}
                     <td className="py-3.5 px-4 sm:px-6 font-mono font-semibold tabular-nums text-[#12263F]">
                       {formatMoney(inv.totalMinorUnits, inv.currency)}
+                    </td>
+
+                    {/* Issue Date */}
+                    <td className="py-3.5 px-4 sm:px-6 font-mono text-xs text-[#5E718D]">
+                      {new Date(inv.invoiceDate).toLocaleDateString([], {
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
                     </td>
 
                     {/* Due Date */}

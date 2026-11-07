@@ -58,10 +58,10 @@ export function StageBreakdown({ breakdown }: StageBreakdownProps) {
       {/* Breakdown Legend Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4">
         {stages.map((stage) => {
-          let stageHref = "/collections";
-          if (stage.key === "OVERDUE") stageHref = "/collections?stage=overdue";
-          if (stage.key === "DUE_SOON") stageHref = "/collections?stage=due_soon";
-          if (stage.key === "AWAITING_PAYMENT") stageHref = "/collections?stage=awaiting";
+          let stageHref = "/invoices";
+          if (stage.key === "OVERDUE") stageHref = "/invoices?status=overdue";
+          if (stage.key === "DUE_SOON") stageHref = "/invoices?status=due_soon";
+          if (stage.key === "AWAITING_PAYMENT") stageHref = "/invoices?status=unpaid";
 
           return (
             <Link
