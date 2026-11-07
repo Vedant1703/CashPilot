@@ -98,3 +98,4 @@ describe("AI Invoice Extraction Reliability (GEN-01)", () => {
     expect(result.draft.notes).toBe(`Drafted from request: "${prompt}"`);
   });
 });
+

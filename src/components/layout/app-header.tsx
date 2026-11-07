@@ -210,7 +210,7 @@ export function AppHeader({
                     {user.name}
                   </span>
                   <span className="text-[10px] text-[#5E718D] leading-tight truncate max-w-[120px]">
-                    Profile
+                    {user.email}
                   </span>
                 </div>
               </Link>

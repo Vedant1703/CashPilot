@@ -20,6 +20,15 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vites
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { NextRequest } from "next/server";
+
+// Mock next/navigation
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/invoices/inv-1",
+  useRouter: () => ({
+    push: vi.fn(),
+    refresh: vi.fn(),
+  }),
+}));
 import { InvoiceDetailView, SerializedInvoiceDetail } from "@/components/invoices/invoice-detail-view";
 import { SendReminderApprovalModal } from "@/components/invoices/send-reminder-approval-modal";
 import { POST as approveRoute } from "@/app/api/invoices/[id]/approve/route";
