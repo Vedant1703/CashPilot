@@ -197,14 +197,23 @@ export function AppHeader({
           {/* User profile & logout (Desktop) */}
           {user && (
             <div className="hidden lg:flex items-center gap-2 pl-2 border-l border-[#E3E8EF]">
-              <div className="flex flex-col text-right">
-                <span className="text-xs font-semibold text-[#12263F] leading-tight truncate max-w-[120px]">
-                  {user.name}
-                </span>
-                <span className="text-[10px] text-[#5E718D] leading-tight truncate max-w-[120px]">
-                  {user.email}
-                </span>
-              </div>
+              <Link
+                href="/profile"
+                className="flex items-center gap-2 px-2 py-1.5 rounded-xl hover:bg-[#F6F5F1] transition-colors group"
+                title="Manage Account Profile"
+              >
+                <div className="w-7 h-7 rounded-lg bg-[#0C7C61]/10 text-[#0C7C61] flex items-center justify-center font-bold text-xs group-hover:bg-[#0C7C61] group-hover:text-white transition-colors">
+                  {user.name ? user.name[0].toUpperCase() : "U"}
+                </div>
+                <div className="flex flex-col text-left">
+                  <span className="text-xs font-semibold text-[#12263F] leading-tight truncate max-w-[120px]">
+                    {user.name}
+                  </span>
+                  <span className="text-[10px] text-[#5E718D] leading-tight truncate max-w-[120px]">
+                    Profile
+                  </span>
+                </div>
+              </Link>
               <button
                 type="button"
                 id="desktop-sign-out-btn"
@@ -279,10 +288,19 @@ export function AppHeader({
           </Link>
 
           {user && (
-            <div className="px-3 py-2 bg-[#F6F5F1] rounded-xl my-2">
-              <div className="text-xs font-semibold text-[#12263F]">{user.name}</div>
-              <div className="text-[11px] text-[#5E718D] truncate">{user.email}</div>
-            </div>
+            <Link
+              href="/profile"
+              onClick={() => setMobileMenuOpen(false)}
+              className="block px-3 py-2 bg-[#F6F5F1] hover:bg-[#EEF2F6] rounded-xl my-2 transition-colors"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-semibold text-[#12263F]">{user.name}</div>
+                  <div className="text-[11px] text-[#5E718D] truncate">{user.email}</div>
+                </div>
+                <span className="text-xs font-semibold text-[#0C7C61]">Profile →</span>
+              </div>
+            </Link>
           )}
 
           <div className="pt-2 border-t border-[#E3E8EF] space-y-2">
